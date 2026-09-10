@@ -1,0 +1,58 @@
+# Build and publish outputs
+**/bin/
+**/obj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/publish/
+**/out/
+**/artifacts/
+**/TestResults/
+**/coverage/
+*.coverage
+*.coveragexml
+*.trx
+*.binlog
+
+# IDE and user-specific files
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.rsuser
+*.sln.docstates
+*.DotSettings.user
+*.pubxml.user
+
+# NuGet packages and generated packages
+**/packages/
+*.nupkg
+*.snupkg
+
+# Logs and temporary files
+**/logs/
+*.log
+*.tmp
+*.temp
+~$*
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local-only configuration and secrets
+.env
+.env.*
+appsettings.Local.json
+appsettings.local.json
+appsettings.*.local.json
+appsettings.*.secrets.json
+secrets.json
+**/appsettings.json
+**/appsettings.Development.json
+**/appsettings.Production.json
+
+# Local SQL Server database files
+*.mdf
+*.ldf
+*.ndf

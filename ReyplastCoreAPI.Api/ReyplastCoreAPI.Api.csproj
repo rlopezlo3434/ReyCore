@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <DefaultItemExcludes>$(DefaultItemExcludes);publish\**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="EFCore.BulkExtensions" Version="6.8.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="6.0.36">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="6.0.36" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+  </ItemGroup>
+
+  <Target Name="ValidateSafePublishDestination" BeforeTargets="PrepareForPublish;Publish">
+    <PropertyGroup>
+      <_PublishProjectRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)'))</_PublishProjectRoot>
+      <_PublishDirCandidate Condition="'$(PublishDir)' != ''">$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_PublishDirCandidate>
+      <_PublishUrlCandidate Condition="'$(PublishUrl)' != ''">$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(PublishUrl)'))</_PublishUrlCandidate>
+      <_VisualStudioPublishTargetCandidate Condition="'$(_PublishTargetUrl)' != ''">$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(_PublishTargetUrl)'))</_VisualStudioPublishTargetCandidate>
+      <_NormalizedPublishDir Condition="'$(_PublishDirCandidate)' != ''">$([System.IO.Path]::GetFullPath('$(_PublishDirCandidate)'))</_NormalizedPublishDir>
+      <_NormalizedPublishUrl Condition="'$(_PublishUrlCandidate)' != ''">$([System.IO.Path]::GetFullPath('$(_PublishUrlCandidate)'))</_NormalizedPublishUrl>
+      <_NormalizedVisualStudioPublishTarget Condition="'$(_VisualStudioPublishTargetCandidate)' != ''">$([System.IO.Path]::GetFullPath('$(_VisualStudioPublishTargetCandidate)'))</_NormalizedVisualStudioPublishTarget>
+      <_ExpectedFolderPublish>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\bin\Release\$(TargetFramework)\publish\'))</_ExpectedFolderPublish>
+    </PropertyGroup>
+
+    <Error Condition="'$(_NormalizedPublishDir)' == '$(_PublishProjectRoot)'"
+           Text="Publicación cancelada: PublishDir apunta a la carpeta fuente del proyecto." />
+    <Error Condition="'$(_NormalizedPublishUrl)' == '$(_PublishProjectRoot)'"
+           Text="Publicación cancelada: PublishUrl apunta a la carpeta fuente del proyecto." />
+    <Error Condition="'$(_NormalizedVisualStudioPublishTarget)' == '$(_PublishProjectRoot)'"
+           Text="Publicación cancelada: Visual Studio intenta publicar sobre la carpeta fuente del proyecto." />
+    <Error Condition="'$(PublishSingleAppSettings)' == 'true' and '$(_NormalizedPublishUrl)' != '$(_ExpectedFolderPublish)'"
+           Text="Publicación cancelada: el perfil debe usar bin\Release\$(TargetFramework)\publish." />
+    <Error Condition="'$(PublishSingleAppSettings)' == 'true' and '$(_NormalizedVisualStudioPublishTarget)' != '$(_ExpectedFolderPublish)'"
+           Text="Publicación cancelada: Visual Studio intenta usar una carpeta distinta a la configurada." />
+  </Target>
+
+  <Target Name="PublishSingleEnvironmentAppSettings"
+          AfterTargets="ComputeFilesToPublish"
+          Condition="'$(PublishSingleAppSettings)' == 'true'">
+    <PropertyGroup>
+      <_SelectedAppSettings>$(MSBuildProjectDirectory)\$(PublishAppSettingsSource)</_SelectedAppSettings>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(_SelectedAppSettings)')"
+           Text="No existe la configuración seleccionada: $(_SelectedAppSettings)" />
+
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(_SelectedAppSettings)">
+        <RelativePath>appsettings.json</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>
