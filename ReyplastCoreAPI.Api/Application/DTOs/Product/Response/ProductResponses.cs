@@ -3,7 +3,7 @@ namespace ReyplastCoreAPI.Application.DTOs.Product.Response;
 /// <summary>Producto local junto con sus colores y trazabilidad.</summary>
 public sealed class ProductResponse
 {
-    /// <summary>Identificador interno de ReyplastCoreDB; no procede de OSIS.</summary>
+    /// <summary>Identificador interno de RP_ReyPlastCoreBD; no procede de OSIS.</summary>
     public Guid Id { get; set; }
     /// <summary>Clasificación normalizada a partir de prd_indset y prd_prduni.</summary>
     public string Type { get; set; } = string.Empty;
@@ -30,7 +30,7 @@ public sealed class ProductResponse
 /// <summary>Color asociado; su sistema de origen es el mismo del producto padre.</summary>
 public sealed class ColorResponse
 {
-    /// <summary>Identificador interno de ReyplastCoreDB.</summary>
+    /// <summary>Identificador interno de RP_ReyPlastCoreBD.</summary>
     public Guid Id { get; set; }
     /// <summary>Código de color procedente de pco_codcol.</summary>
     public string Code { get; set; } = string.Empty;
@@ -89,36 +89,14 @@ public sealed class ProductSyncAcceptedResponse
     public Guid ExecutionId { get; set; }
     /// <summary>Estado inicial de la solicitud: QUEUED.</summary>
     public string Status { get; set; } = string.Empty;
-    /// <summary>Ruta relativa para consultar el avance.</summary>
-    public string StatusUrl { get; set; } = string.Empty;
+    /// <summary>Id del job en Hangfire -- su avance se consulta en /hangfire/jobs/details/{JobId}.</summary>
+    public string JobId { get; set; } = string.Empty;
 }
 
-/// <summary>Resumen auditable de una ejecución de sincronización.</summary>
-public sealed class SyncExecutionResponse
+/// <summary>Solicitud genérica de sincronización de catálogo: el caller define el origen
+/// (ver <see cref="ReyplastCoreAPI.Domain.Catalog.SourceSystems"/>) en vez de llamar a una
+/// ruta distinta por cada uno.</summary>
+public sealed class ProductSyncRequest
 {
-    /// <summary>Identificador único del intento de sincronización.</summary>
-    public Guid Id { get; set; }
-    /// <summary>Sistema consultado, por ejemplo OSIS o SAP.</summary>
-    public string SourceSystem { get; set; } = string.Empty;
-    /// <summary>Recurso sincronizado: PRODUCTS u ORDERS.</summary>
-    public string ResourceType { get; set; } = string.Empty;
-    /// <summary>Momento en que comenzó el intento.</summary>
-    public DateTime StartedAt { get; set; }
-    /// <summary>Momento en que terminó; nulo mientras está RUNNING.</summary>
-    public DateTime? CompletedAt { get; set; }
-    /// <summary>RUNNING, COMPLETED o FAILED.</summary>
-    public string Status { get; set; } = string.Empty;
-    /// <summary>Segundos transcurridos desde el inicio; continúa creciendo mientras está RUNNING.</summary>
-    public double DurationSeconds { get; set; }
-    /// <summary>Último código confirmado; permite auditar el avance del cursor.</summary>
-    public string? LastCursor { get; set; }
-    public long RecordsRead { get; set; }
-    public int RecordsCreated { get; set; }
-    public int RecordsChanged { get; set; }
-    public int RecordsUnchanged { get; set; }
-    public int ChildRecordsCreated { get; set; }
-    public int ChildRecordsChanged { get; set; }
-    public int ChildRecordsUnchanged { get; set; }
-    /// <summary>Detalle técnico cuando la ejecución termina en FAILED.</summary>
-    public string? ErrorMessage { get; set; }
+    public string SourceSystem { get; set; } = ReyplastCoreAPI.Domain.Catalog.SourceSystems.Osis;
 }

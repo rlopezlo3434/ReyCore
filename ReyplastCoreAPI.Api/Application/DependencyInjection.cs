@@ -1,24 +1,35 @@
 using ReyplastCoreAPI.Application.Interfaces.Services;
 using ReyplastCoreAPI.Application.Services.Products;
 using ReyplastCoreAPI.Application.Services.Orders;
+using ReyplastCoreAPI.Application.Services.Channels;
+using ReyplastCoreAPI.Application.DTOs.Integrations.Sap;
 
 namespace ReyplastCoreAPI.Application;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    public static IServiceCollection AddApplicationServices(
+        this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddOptions<SapOrderSyncOptions>()
+            .Bind(configuration.GetSection(SapOrderSyncOptions.SectionName))
+            .Validate(options => options.DatabaseBatchSize > 0,
+                "SapOrdersApi:DatabaseBatchSize debe ser mayor que cero.")
+            .ValidateOnStart();
         services.AddScoped<IProductService, ProductService>();
         services.AddScoped<IProductSyncService, ProductSyncService>();
         services.AddScoped<IOrderService, OrderService>();
-        services.AddScoped<IOrderSyncService, OrderSyncService>();
+        services.AddScoped<IAppOrderQueryService, AppOrderQueryService>();
+        services.AddScoped<IOsisOrderSyncService, OsisOrderSyncService>();
+        services.AddScoped<ISapOrderSyncService, SapOrderSyncService>();
+        services.AddScoped<IChannelService, ChannelService>();
         services.AddSingleton<ProductSynchronizationLock>();
-        services.AddSingleton<ProductSyncQueue>();
-        services.AddSingleton<IProductSyncQueue>(provider => provider.GetRequiredService<ProductSyncQueue>());
-        services.AddHostedService(provider => provider.GetRequiredService<ProductSyncQueue>());
-        services.AddSingleton<OrderSyncQueue>();
-        services.AddSingleton<IOrderSyncQueue>(provider => provider.GetRequiredService<OrderSyncQueue>());
-        services.AddHostedService(provider => provider.GetRequiredService<OrderSyncQueue>());
+        services.AddScoped<ProductSyncBackgroundJob>();
+        services.AddScoped<IProductSyncQueue, ProductSyncQueue>();
+        services.AddScoped<OrderSyncBackgroundJob>();
+        services.AddScoped<IOrderSyncQueue, OrderSyncQueue>();
+        services.AddSingleton<OrderSynchronizationLock>();
+        services.AddSingleton<OrderOnDemandSyncLock>();
         return services;
     }
 }

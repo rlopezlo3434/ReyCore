@@ -26,13 +26,19 @@ public sealed class SyncExecution
     /// <summary>Último código procesado; permite diagnosticar hasta dónde avanzó el cursor.</summary>
     public string? LastCursor { get; set; }
 
-    /// <summary>Cantidad total de productos leídos desde el origen.</summary>
+    /// <summary>Cantidad total de registros principales leídos: productos o cabeceras de pedido.</summary>
     public long RecordsRead { get; set; }
+    /// <summary>Registros principales creados en RP_ReyPlastCoreBD.</summary>
     public int RecordsCreated { get; set; }
+    /// <summary>Registros principales cuyo contenido cambió.</summary>
     public int RecordsChanged { get; set; }
+    /// <summary>Registros principales verificados sin cambios.</summary>
     public int RecordsUnchanged { get; set; }
+    /// <summary>Registros hijos creados: colores o detalles, según ResourceType.</summary>
     public int ChildRecordsCreated { get; set; }
+    /// <summary>Registros hijos modificados.</summary>
     public int ChildRecordsChanged { get; set; }
+    /// <summary>Registros hijos verificados sin cambios.</summary>
     public int ChildRecordsUnchanged { get; set; }
 
     /// <summary>Error de la ejecución fallida, limitado a 2,000 caracteres.</summary>
@@ -43,6 +49,7 @@ public static class SyncResourceTypes
 {
     public const string Products = "PRODUCTS";
     public const string Orders = "ORDERS";
+    public const string Channels = "CHANNELS";
 }
 
 /// <summary>Estados persistidos para cualquier sincronización de catálogo.</summary>

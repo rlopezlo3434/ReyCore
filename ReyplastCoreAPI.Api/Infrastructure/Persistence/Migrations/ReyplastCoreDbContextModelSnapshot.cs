@@ -17,10 +17,111 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "6.0.36")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
-            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder, 1L, 1);
+            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Channel", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ChannelGroupId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("LastSynchronizedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ModifiedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ModifiedBy")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("SourceSystem")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid?>("SyncExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelGroupId")
+                        .HasDatabaseName("IX_Channels_ChannelGroupId");
+
+                    b.HasIndex("SyncExecutionId")
+                        .HasDatabaseName("IX_Channels_SyncExecutionId");
+
+                    b.HasIndex("SourceSystem", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Channels_SourceSystem_Code");
+
+                    b.ToTable("Channels", "dbo");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.ChannelGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ModifiedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ModifiedBy")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ChannelGroups_Name");
+
+                    b.ToTable("ChannelGroups", "dbo");
+                });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Color", b =>
                 {
@@ -79,7 +180,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_Colors_ProductId_Code");
 
-                    b.ToTable("Colors", (string)null);
+                    b.ToTable("Colors", "dbo");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Product", b =>
@@ -143,70 +244,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("SourceSystem", "Type", "IsActive")
                         .HasDatabaseName("IX_Products_SourceSystem_Type_IsActive");
 
-                    b.ToTable("Products", (string)null);
-                });
-
-            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.SyncExecution", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("ChildRecordsChanged")
-                        .HasColumnType("int");
-
-                    b.Property<int>("ChildRecordsCreated")
-                        .HasColumnType("int");
-
-                    b.Property<int>("ChildRecordsUnchanged")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<string>("LastCursor")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<int>("RecordsChanged")
-                        .HasColumnType("int");
-
-                    b.Property<int>("RecordsCreated")
-                        .HasColumnType("int");
-
-                    b.Property<long>("RecordsRead")
-                        .HasColumnType("bigint");
-
-                    b.Property<int>("RecordsUnchanged")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ResourceType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<string>("SourceSystem")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<DateTime>("StartedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SourceSystem", "ResourceType", "Status", "StartedAt")
-                        .HasDatabaseName("IX_SyncExecutions_Source_Resource_Status_StartedAt");
-
-                    b.ToTable("SyncExecutions", (string)null);
+                    b.ToTable("Products", "dbo");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.OrderSituation", b =>
@@ -226,7 +264,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
 
                     b.HasKey("SourceSystem", "Code");
 
-                    b.ToTable("OrderSituations", (string)null);
+                    b.ToTable("OrderSituations", "orders");
 
                     b.HasData(
                         new
@@ -296,6 +334,9 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("ApprovalDate")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("BranchCode")
                         .HasMaxLength(2)
                         .HasColumnType("nvarchar(2)");
@@ -352,6 +393,14 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<string>("PaymentConditionCode")
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<string>("PaymentConditionName")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("SituationCode")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -374,10 +423,14 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("ChannelCode")
                         .HasDatabaseName("IX_Orders_ChannelCode");
 
-                    b.HasIndex("SyncExecutionId");
+                    b.HasIndex("ApprovalDate", "SituationCode")
+                        .HasDatabaseName("IX_Orders_ApprovalDate_SituationCode");
 
                     b.HasIndex("DocDate", "SituationCode")
                         .HasDatabaseName("IX_Orders_DocDate_SituationCode");
+
+                    b.HasIndex("SourceSystem", "DocNum")
+                        .HasDatabaseName("IX_Orders_Source_DocNum");
 
                     b.HasIndex("SourceSystem", "SituationCode");
 
@@ -391,7 +444,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Orders_Source_Branch_DocNum")
                         .HasFilter("[BranchCode] IS NOT NULL");
 
-                    b.ToTable("Orders", (string)null);
+                    b.ToTable("Orders", "orders");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", b =>
@@ -454,6 +507,10 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<decimal>("SuspendedQuantity")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
                     b.Property<Guid?>("SyncExecutionId")
                         .HasColumnType("uniqueidentifier");
 
@@ -466,7 +523,55 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_OrderDetails_Order_SourceDetailId");
 
-                    b.ToTable("OrderDetails", (string)null);
+                    b.ToTable("OrderDetails", "orders");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetailQuantityHistory", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("AvailableQuantity")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<DateTime>("ObservedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("OrderDetailId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("RequestedQuantity")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("SuspendedQuantity")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<Guid?>("SyncExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SyncExecutionId");
+
+                    b.HasIndex("OrderDetailId", "ObservedAt");
+
+                    b.ToTable("OrderDetailQuantityHistory", "orders");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Channel", b =>
+                {
+                    b.HasOne("ReyplastCoreAPI.Domain.Catalog.Entities.ChannelGroup", "ChannelGroup")
+                        .WithMany("Channels")
+                        .HasForeignKey("ChannelGroupId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ChannelGroup");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Color", b =>
@@ -477,29 +582,11 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("ReyplastCoreAPI.Domain.Catalog.Entities.SyncExecution", null)
-                        .WithMany()
-                        .HasForeignKey("SyncExecutionId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.Navigation("Product");
-                });
-
-            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Product", b =>
-                {
-                    b.HasOne("ReyplastCoreAPI.Domain.Catalog.Entities.SyncExecution", null)
-                        .WithMany()
-                        .HasForeignKey("SyncExecutionId")
-                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrder", b =>
                 {
-                    b.HasOne("ReyplastCoreAPI.Domain.Catalog.Entities.SyncExecution", null)
-                        .WithMany()
-                        .HasForeignKey("SyncExecutionId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("ReyplastCoreAPI.Domain.Orders.Entities.OrderSituation", "Situation")
                         .WithMany("Orders")
                         .HasForeignKey("SourceSystem", "SituationCode")
@@ -517,12 +604,23 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("ReyplastCoreAPI.Domain.Catalog.Entities.SyncExecution", null)
-                        .WithMany()
-                        .HasForeignKey("SyncExecutionId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetailQuantityHistory", b =>
+                {
+                    b.HasOne("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", "OrderDetail")
+                        .WithMany("QuantityHistory")
+                        .HasForeignKey("OrderDetailId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("OrderDetail");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.ChannelGroup", b =>
+                {
+                    b.Navigation("Channels");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Product", b =>
@@ -538,6 +636,11 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrder", b =>
                 {
                     b.Navigation("Details");
+                });
+
+            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", b =>
+                {
+                    b.Navigation("QuantityHistory");
                 });
 #pragma warning restore 612, 618
         }

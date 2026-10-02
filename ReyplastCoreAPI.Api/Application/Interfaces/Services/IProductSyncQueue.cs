@@ -1,11 +1,8 @@
 namespace ReyplastCoreAPI.Application.Interfaces.Services;
 
-/// <summary>Cola en memoria que desacopla la sincronización de la conexión HTTP.</summary>
+/// <summary>Encola sincronizaciones de productos en Hangfire.</summary>
 public interface IProductSyncQueue
 {
-    /// <summary>Registra una ejecución OSIS para que el worker la procese una sola vez.</summary>
-    bool TryEnqueueOsis(Guid executionId);
-
-    /// <summary>Solicita la cancelación de una ejecución en cola o en curso.</summary>
-    bool TryCancel(Guid executionId);
+    /// <summary>Encola una ejecución OSIS. Devuelve el id del job, o null si no se pudo encolar.</summary>
+    Task<string?> EnqueueOsisAsync(Guid executionId, CancellationToken cancellationToken);
 }

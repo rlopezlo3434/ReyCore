@@ -13,8 +13,8 @@ internal sealed class OsisDbContext : DbContext
     public DbSet<OsisOrderEntity> Orders => Set<OsisOrderEntity>();
     public DbSet<OsisOrderDetailEntity> OrderDetails => Set<OsisOrderDetailEntity>();
     public DbSet<OsisAuxiliaryEntity> Auxiliaries => Set<OsisAuxiliaryEntity>();
-    public DbSet<OsisClientCompanyEntity> ClientCompanies => Set<OsisClientCompanyEntity>();
-    public DbSet<OsisChannelEntity> Channels => Set<OsisChannelEntity>();
+    public DbSet<OsisPriceListEntity> PriceLists => Set<OsisPriceListEntity>();
+    public DbSet<OsisPaymentConditionEntity> PaymentConditions => Set<OsisPaymentConditionEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -64,6 +64,10 @@ internal sealed class OsisDbContext : DbContext
             entity.Property(x => x.StatusCode).HasColumnName("PPC_SITPPC");
             entity.Property(x => x.DocTotal).HasColumnName("PPC_IMPTOT").HasPrecision(16, 2);
             entity.Property(x => x.ActiveCode).HasColumnName("PPC_INDEST");
+            entity.Property(x => x.PaymentConditionCode).HasColumnName("CPA_CODCPA");
+            entity.Property(x => x.TlpCode).HasColumnName("TLP_CODTLP");
+            entity.Property(x => x.ModifiedAt).HasColumnName("PPC_FECACT");
+            entity.Property(x => x.ApprovalDate).HasColumnName("PPC_FECAPR");
         });
 
         modelBuilder.Entity<OsisOrderDetailEntity>(entity =>
@@ -76,10 +80,12 @@ internal sealed class OsisDbContext : DbContext
             entity.Property(x => x.ItemCode).HasColumnName("PRD_CODPRD");
             entity.Property(x => x.LineNumber).HasColumnName("PPD_CORPPD");
             entity.Property(x => x.Quantity).HasColumnName("PPD_CANSOL").HasPrecision(10, 2);
+            entity.Property(x => x.SuspendedQuantity).HasColumnName("PPD_CANSUS").HasPrecision(10, 2);
             entity.Property(x => x.Price).HasColumnName("PPD_PREUNI").HasPrecision(10, 4);
             // LineTotal sigue la semántica comercial de SAP: cantidad por precio sin IGV.
             entity.Property(x => x.LineTotal).HasColumnName("PPD_IMPBRU").HasPrecision(10, 2);
             entity.Property(x => x.ActiveCode).HasColumnName("PPD_INDEST");
+            entity.Property(x => x.ModifiedAt).HasColumnName("PPD_fECACT");
         });
 
         modelBuilder.Entity<OsisAuxiliaryEntity>(entity =>
@@ -91,22 +97,21 @@ internal sealed class OsisDbContext : DbContext
             entity.Property(x => x.CardName).HasColumnName("AUX_NOMAUX");
         });
 
-        modelBuilder.Entity<OsisClientCompanyEntity>(entity =>
+        modelBuilder.Entity<OsisPriceListEntity>(entity =>
         {
-            entity.ToTable("CLIENTES_CIA_CLC", "dbo");
-            entity.HasKey(x => new { x.CompanyCode, x.CardCode });
-            entity.Property(x => x.CompanyCode).HasColumnName("CIA_CODCIA");
-            entity.Property(x => x.CardCode).HasColumnName("AUX_CODAUX");
-            entity.Property(x => x.ChannelGroupId).HasColumnName("IDGRUPO_VEND");
+            entity.ToTable("tipo_lista_precio_tlp", "dbo");
+            entity.HasKey(x => new { x.CompanyCode, x.Code });
+            entity.Property(x => x.CompanyCode).HasColumnName("cia_codcia");
+            entity.Property(x => x.Code).HasColumnName("tlp_codtlp");
+            entity.Property(x => x.Name).HasColumnName("tlp_destlp");
         });
 
-        modelBuilder.Entity<OsisChannelEntity>(entity =>
+        modelBuilder.Entity<OsisPaymentConditionEntity>(entity =>
         {
-            entity.ToTable("VENDEDOR_CLIENTE_GRUPOS", "dbo");
-            entity.HasKey(x => x.Id);
-            entity.Property(x => x.Id).HasColumnName("IDGRUPO_VEND");
-            entity.Property(x => x.ChannelCode).HasColumnName("CANAL_COD");
-            entity.Property(x => x.ChannelName).HasColumnName("GRUPO_VEND");
+            entity.ToTable("cond_pago_cpa", "dbo");
+            entity.HasKey(x => x.Code);
+            entity.Property(x => x.Code).HasColumnName("cpa_codcpa");
+            entity.Property(x => x.Name).HasColumnName("cpa_deslar");
         });
     }
 }

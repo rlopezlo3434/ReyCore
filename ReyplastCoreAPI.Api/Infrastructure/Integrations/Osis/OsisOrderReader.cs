@@ -9,7 +9,6 @@ namespace ReyplastCoreAPI.Infrastructure.Integrations.Osis;
 /// <summary>Lee cabeceras PPC y detalles PPD directamente desde XIMESA.</summary>
 internal sealed class OsisOrderReader : IOsisOrderReader
 {
-    private const int SourcePageSize = 500;
     private readonly OsisDbContext _context;
     private readonly OsisOptions _options;
 
@@ -19,13 +18,42 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         _options = options.Value;
     }
 
-    public async Task<OsisOrderPage> ReadPageAsync(
-        string? cursor,
+    public async Task<OsisOrderPage> ReadRangePageAsync(DateTime dateFrom, DateTime dateTo,
+        string? cursor, CancellationToken cancellationToken = default)
+    {
+        DateTime from = dateFrom.Date;
+        DateTime exclusiveDateTo = dateTo.Date.AddDays(1);
+        IQueryable<OsisOrderEntity> source = _context.Orders.AsNoTracking()
+            .Where(order => order.CompanyCode == OsisCatalogCodes.ReyplastCompany
+                && order.CreatedAt >= from
+                && order.CreatedAt < exclusiveDateTo);
+        return await ReadPageAsync(source, cursor, cancellationToken);
+    }
+
+    public async Task<OsisOrderPage> ReadApprovedDayPageAsync(DateTime date, string? cursor,
         CancellationToken cancellationToken = default)
     {
-        (string? afterDocNum, string? afterBranch) = ParseCursor(cursor);
+        string approved = _options.ApprovedSituationCode;
+        DateTime from = date.Date;
+        DateTime exclusiveTo = from.AddDays(1);
+        // Aprobados ESE día por fecha de aprobación (PPC_FECAPR), no por fecha de creación: un pedido creado
+        // ayer y aprobado hoy también entra. El límite de creación solo acota la búsqueda en OSIS (usa la
+        // fecha de creación, igual que el sync por rango); no amplía lo que se sincroniza.
+        DateTime createdFrom = from.AddDays(-Math.Max(_options.ApprovedDayCreationLookbackDays, 1));
         IQueryable<OsisOrderEntity> source = _context.Orders.AsNoTracking()
-            .Where(order => order.CompanyCode == OsisCatalogCodes.ReyplastCompany);
+            .Where(order => order.CompanyCode == OsisCatalogCodes.ReyplastCompany
+                && order.CreatedAt >= createdFrom
+                && order.CreatedAt < exclusiveTo
+                && order.ApprovalDate >= from
+                && order.ApprovalDate < exclusiveTo
+                && order.StatusCode == approved);
+        return await ReadPageAsync(source, cursor, cancellationToken);
+    }
+
+    private async Task<OsisOrderPage> ReadPageAsync(IQueryable<OsisOrderEntity> source,
+        string? cursor, CancellationToken cancellationToken)
+    {
+        (string? afterDocNum, string? afterBranch) = ParseCursor(cursor);
         if (afterDocNum is not null)
         {
             source = source.Where(order =>
@@ -36,10 +64,10 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         List<OsisOrderRecord> orders = await ProjectHeaders(source)
             .OrderByDescending(order => order.DocNum)
             .ThenByDescending(order => order.BranchCode)
-            .Take(SourcePageSize + 1)
+            .Take(_options.OrderPageSize + 1)
             .ToListAsync(cancellationToken);
 
-        bool hasMore = orders.Count > SourcePageSize;
+        bool hasMore = orders.Count > _options.OrderPageSize;
         if (hasMore) orders.RemoveAt(orders.Count - 1);
         if (orders.Count > 0) await LoadDetailsAsync(orders, cancellationToken);
 
@@ -73,13 +101,13 @@ internal sealed class OsisOrderReader : IOsisOrderReader
             on new { order.CompanyCode, order.CardCode }
             equals new { auxiliary.CompanyCode, auxiliary.CardCode } into auxiliaryJoin
         from auxiliary in auxiliaryJoin.DefaultIfEmpty()
-        join client in _context.ClientCompanies.AsNoTracking()
-            on new { order.CompanyCode, order.CardCode }
-            equals new { client.CompanyCode, client.CardCode } into clientJoin
-        from client in clientJoin.DefaultIfEmpty()
-        join channel in _context.Channels.AsNoTracking()
-            on client.ChannelGroupId equals (int?)channel.Id into channelJoin
-        from channel in channelJoin.DefaultIfEmpty()
+        join priceList in _context.PriceLists.AsNoTracking()
+            on new { order.CompanyCode, Code = order.TlpCode }
+            equals new { priceList.CompanyCode, Code = (string?)priceList.Code } into priceListJoin
+        from priceList in priceListJoin.DefaultIfEmpty()
+        join paymentCondition in _context.PaymentConditions.AsNoTracking()
+            on order.PaymentConditionCode equals paymentCondition.Code into paymentConditionJoin
+        from paymentCondition in paymentConditionJoin.DefaultIfEmpty()
         select new OsisOrderRecord
         {
             BranchCode = order.BranchCode.Trim(),
@@ -90,10 +118,15 @@ internal sealed class OsisOrderReader : IOsisOrderReader
             CardName = auxiliary == null ? string.Empty : auxiliary.CardName.Trim(),
             SituationCode = order.StatusCode.Trim(),
             DocTotal = order.DocTotal,
-            ChannelCode = channel == null || channel.ChannelCode == null
-                ? null : channel.ChannelCode.Trim(),
-            ChannelName = channel == null || channel.ChannelName == null
-                ? null : channel.ChannelName.Trim(),
+            ChannelCode = priceList == null ? null : priceList.Code.Trim(),
+            ChannelName = priceList == null || priceList.Name == null
+                ? null : priceList.Name.Trim(),
+            PaymentConditionCode = order.PaymentConditionCode == null
+                ? null : order.PaymentConditionCode!.Trim(),
+            PaymentConditionName = paymentCondition == null || paymentCondition.Name == null
+                ? null : paymentCondition.Name.Trim(),
+            ModifiedAt = order.ModifiedAt,
+            ApprovalDate = order.ApprovalDate,
             IsActive = order.ActiveCode == _options.ActiveStatusCode
         };
 
@@ -102,6 +135,10 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         CancellationToken cancellationToken)
     {
         string[] docNums = orders.Select(order => order.DocNum).Distinct().ToArray();
+        // La PK de PPD es (CIA_CODCIA, SUC_CODSUC, PPC_NUMPPC, PRD_CODPRD). Sin filtrar también por
+        // sucursal, SQL Server no puede buscar por la clave y recorre las líneas de toda la compañía:
+        // con OSIS cargado eso superaba los 120 s de timeout. Las sucursales de una página son pocas.
+        string[] branchCodes = orders.Select(order => order.BranchCode).Distinct().ToArray();
         HashSet<string> pageKeys = orders
             .Select(order => BuildOrderKey(order.BranchCode, order.DocNum))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -113,6 +150,7 @@ internal sealed class OsisOrderReader : IOsisOrderReader
                 equals new { product.CompanyCode, ItemCode = product.ProductCode } into productJoin
             from product in productJoin.DefaultIfEmpty()
             where detail.CompanyCode == OsisCatalogCodes.ReyplastCompany
+                  && branchCodes.Contains(detail.BranchCode)
                   && docNums.Contains(detail.DocNum)
             orderby detail.DocNum, detail.BranchCode, detail.LineNumber
             select new OsisOrderDetailRecord
@@ -123,6 +161,7 @@ internal sealed class OsisOrderReader : IOsisOrderReader
                 ItemCode = detail.ItemCode.Trim(),
                 Description = product == null ? null : product.ProductDescription.Trim(),
                 Quantity = detail.Quantity,
+                SuspendedQuantity = detail.SuspendedQuantity ?? 0m,
                 Price = detail.Price,
                 LineTotal = detail.LineTotal,
                 IsActive = detail.ActiveCode == _options.ActiveStatusCode

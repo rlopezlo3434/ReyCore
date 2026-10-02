@@ -30,26 +30,4 @@ public static class ProductMapper
         SyncExecutionId = color.SyncExecutionId,
         LastSynchronizedAt = color.LastSynchronizedAt
     };
-
-    public static SyncExecutionResponse ToResponse(SyncExecution execution) => new()
-    {
-        Id = execution.Id,
-        SourceSystem = execution.SourceSystem,
-        ResourceType = execution.ResourceType,
-        StartedAt = execution.StartedAt,
-        CompletedAt = execution.CompletedAt,
-        Status = execution.Status,
-        DurationSeconds = Math.Round(
-            ((execution.CompletedAt ?? DateTime.UtcNow.AddHours(-5)) - execution.StartedAt).TotalSeconds,
-            3),
-        LastCursor = execution.LastCursor,
-        RecordsRead = execution.RecordsRead,
-        RecordsCreated = execution.RecordsCreated,
-        RecordsChanged = execution.RecordsChanged,
-        RecordsUnchanged = execution.RecordsUnchanged,
-        ChildRecordsCreated = execution.ChildRecordsCreated,
-        ChildRecordsChanged = execution.ChildRecordsChanged,
-        ChildRecordsUnchanged = execution.ChildRecordsUnchanged,
-        ErrorMessage = execution.ErrorMessage
-    };
 }

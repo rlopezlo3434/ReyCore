@@ -1,7 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Reflection;
+using ReyplastCoreAPI.Api.Hubs;
 using ReyplastCoreAPI.Application;
+using ReyplastCoreAPI.Application.Interfaces.Services;
+using ReyplastCoreAPI.Application.Services.Orders;
 using ReyplastCoreAPI.Infrastructure;
 
 namespace ReyplastCoreAPI.Api.Extensions;
@@ -17,7 +20,12 @@ public static class ApiServiceCollectionExtensions
             options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
             options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
-        services.AddApplicationServices();
+        services.AddSignalR().AddJsonProtocol(options =>
+            options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
+        services.AddSingleton<IOrderSyncNotifier, SignalROrderSyncNotifier>();
+        services.Configure<OsisApprovedHourlySyncOptions>(
+            configuration.GetSection(OsisApprovedHourlySyncOptions.SectionName));
+        services.AddApplicationServices(configuration);
         services.AddInfrastructureServices(configuration);
         return services;
     }

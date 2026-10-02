@@ -5,7 +5,7 @@ public static class CatalogColorCodes
 {
     /// <summary>
     /// 505A representa SURTIDO: no es un color concreto y por eso no se almacena
-    /// como variante en ReyplastCoreDB.
+    /// como variante en RP_ReyPlastCoreBD.
     /// </summary>
     public const string Assorted = "505A";
 }

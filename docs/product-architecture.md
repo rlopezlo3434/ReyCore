@@ -7,7 +7,7 @@ independiente. No usa procedimientos almacenados, vistas ni `SqlCommand`.
 
 Las conexiones tienen responsabilidades separadas:
 
-- `ConnectionStrings:SqlServerConnection`: base propia `ReyplastCoreDB`.
+- `ConnectionStrings:SqlServerConnection`: base propia `RP_ReyPlastCoreBD`.
 - `ConnectionStrings:OsisConnection`: base `XIMESA`, usada únicamente como fuente de lectura.
 
 En despliegue pueden reemplazarse con `ConnectionStrings__SqlServerConnection` y
@@ -38,7 +38,7 @@ El producto expone tipo, código genérico, descripción, estado y colores. Cada
 código, descripción, habilitación de venta y estado.
 
 El código `505A` significa `SURTIDO`, no un color concreto. La integración lo excluye durante
-la lectura y elimina cualquier asociación `505A` preexistente de `ReyplastCoreDB.Colors`. Las
+la lectura y elimina cualquier asociación `505A` preexistente de `RP_ReyPlastCoreBD.catalog.Colors`. Las
 operaciones manuales tampoco permiten registrarlo.
 
 La clasificación se deriva de `prd_indset` y, cuando vale `0`, de `prd_prduni`:
@@ -82,22 +82,15 @@ no se comparten entre tareas paralelas.
 
 ## Historial y trazabilidad
 
-`dbo.SyncExecutions` crea una fila por intento de sincronización, no por producto. Guarda
-sistema de origen, inicio, fin, estado (`QUEUED`, `RUNNING`, `COMPLETED`, `FAILED` o
-`CANCELLED`), cursor, contadores y error. La API calcula `durationSeconds` usando inicio y fin;
-si todavía se está ejecutando muestra el tiempo transcurrido.
+No hay historial propio de sincronizaciones (la tabla `dbo.SyncExecutions` se eliminó en la
+migración `ReplaceSyncTrackingWithIntegrationCursor`). Hangfire es la única fuente de verdad:
+`POST /api/products/sync` responde `202 Accepted` con el `jobId`, y su estado, reintentos
+(máximo 3), errores y duración se consultan en `/hangfire/jobs/details/{jobId}`. Desde el mismo
+dashboard se puede borrar un job en cola o reencolarlo.
 
-El historial es de solo lectura y no inicia una sincronización:
-
-`GET /api/products/sync/executions?pageNumber=1&pageSize=20&sourceSystem=OSIS`
-
-El detalle y la cancelación cooperativa se consultan mediante:
-
-- `GET /api/products/sync/executions/{executionId}`
-- `DELETE /api/products/sync/executions/{executionId}`
-
-Cancelar revierte la transacción de la página que se encuentra activa, pero conserva las
-páginas que ya fueron confirmadas. Nunca ejecuta la desactivación final de registros ausentes.
+Cancelar un job en curso revierte la transacción de la página que se encuentra activa, pero
+conserva las páginas que ya fueron confirmadas. Nunca ejecuta la desactivación final de
+registros ausentes.
 
 `Products` y `Colors` guardan:
 

@@ -16,6 +16,7 @@ public sealed class ProductSyncService : IProductSyncService
 {
     private readonly IProductRepository _productRepository;
     private readonly IProductSyncRepository _syncRepository;
+    private readonly ISyncExecutionRepository _executions;
     private readonly IOsisCatalogReader _catalogReader;
     private readonly IProductSyncQueue _syncQueue;
     private readonly ProductSynchronizationLock _synchronizationLock;
@@ -23,12 +24,14 @@ public sealed class ProductSyncService : IProductSyncService
     public ProductSyncService(
         IProductRepository productRepository,
         IProductSyncRepository syncRepository,
+        ISyncExecutionRepository executions,
         IOsisCatalogReader catalogReader,
         IProductSyncQueue syncQueue,
         ProductSynchronizationLock synchronizationLock)
     {
         _productRepository = productRepository;
         _syncRepository = syncRepository;
+        _executions = executions;
         _catalogReader = catalogReader;
         _syncQueue = syncQueue;
         _synchronizationLock = synchronizationLock;
@@ -47,20 +50,16 @@ public sealed class ProductSyncService : IProductSyncService
             Status = SyncStatuses.Queued
         };
 
-        await _syncRepository.CreateExecutionAsync(execution, cancellationToken);
-        if (!_syncQueue.TryEnqueueOsis(execution.Id))
+        await _executions.CreateAsync(execution, cancellationToken);
+        string? jobId = await _syncQueue.EnqueueOsisAsync(execution.Id, cancellationToken);
+        if (jobId is null)
         {
-            await _syncRepository.MarkFailedAsync(
+            await _executions.MarkFailedAsync(
                 execution.Id, "No fue posible agregar la ejecución a la cola.", CancellationToken.None);
             throw new AppException("No fue posible agregar la sincronización a la cola.", 503);
         }
 
-        return new ProductSyncAcceptedResponse
-        {
-            ExecutionId = execution.Id,
-            Status = execution.Status,
-            StatusUrl = $"/api/products/sync/executions/{execution.Id}"
-        };
+        return new ProductSyncAcceptedResponse { ExecutionId = execution.Id, Status = execution.Status, JobId = jobId };
     }
 
     /// <summary>Ejecuta desde el worker la lectura y persistencia de XIMESA/OSIS.</summary>
@@ -80,7 +79,7 @@ public sealed class ProductSyncService : IProductSyncService
         {
             await _synchronizationLock.WaitAsync(cancellationToken);
             lockAcquired = true;
-            execution = await _syncRepository.MarkRunningAsync(
+            execution = await _executions.MarkRunningAsync(
                 executionId, CurrentTime(), cancellationToken);
             response.Status = SyncStatuses.Running;
             await _syncRepository.DeleteExcludedColorsAsync(
@@ -114,14 +113,14 @@ public sealed class ProductSyncService : IProductSyncService
         }
         catch (OperationCanceledException)
         {
-            await _syncRepository.MarkCancelledAsync(
+            await _executions.MarkCancelledAsync(
                 executionId, "La sincronización fue cancelada.", CancellationToken.None);
         }
         catch (Exception exception)
         {
             try
             {
-                await _syncRepository.MarkFailedAsync(
+                await _executions.MarkFailedAsync(
                     executionId, exception.Message, CancellationToken.None);
             }
             catch
@@ -135,51 +134,6 @@ public sealed class ProductSyncService : IProductSyncService
         {
             if (lockAcquired) _synchronizationLock.Release();
         }
-    }
-
-    /// <summary>Consulta el historial general, opcionalmente filtrado por sistema de origen.</summary>
-    public async Task<PaginatedResponse<SyncExecutionResponse>> GetExecutionsAsync(
-        int pageNumber,
-        int pageSize,
-        string? sourceSystem,
-        CancellationToken cancellationToken = default)
-    {
-        ValidationHelper.ThrowIfInvalidPage(pageNumber, pageSize);
-        string? normalizedSource = NormalizeOptionalSourceSystem(sourceSystem);
-        PaginatedResponse<SyncExecution> page = await _syncRepository.GetExecutionsAsync(
-            pageNumber, pageSize, normalizedSource, SyncResourceTypes.Products, cancellationToken);
-        return new PaginatedResponse<SyncExecutionResponse>
-        {
-            Items = page.Items.Select(ProductMapper.ToResponse).ToList(),
-            PageNumber = page.PageNumber,
-            PageSize = page.PageSize,
-            TotalRecords = page.TotalRecords,
-            TotalPages = page.TotalPages
-        };
-    }
-
-    public async Task<SyncExecutionResponse> GetExecutionAsync(
-        Guid executionId,
-        CancellationToken cancellationToken = default)
-    {
-        ValidationHelper.ThrowIfInvalidId(executionId, "El identificador de ejecución no es válido.");
-        SyncExecution? execution = await _syncRepository.GetExecutionAsync(executionId, cancellationToken);
-        if (execution is null || execution.ResourceType != SyncResourceTypes.Products)
-            throw new AppException("No se encontró la ejecución de productos.", 404);
-        return ProductMapper.ToResponse(execution);
-    }
-
-    public async Task<SyncExecutionResponse> CancelExecutionAsync(
-        Guid executionId,
-        CancellationToken cancellationToken = default)
-    {
-        SyncExecutionResponse execution = await GetExecutionAsync(executionId, cancellationToken);
-        if (execution.Status is SyncStatuses.Completed or SyncStatuses.Failed or SyncStatuses.Cancelled)
-            throw new AppException("La ejecución ya terminó y no puede cancelarse.", 409);
-        if (!_syncQueue.TryCancel(executionId))
-            throw new AppException("La ejecución ya no se encuentra activa en esta instancia.", 409);
-
-        return await GetExecutionAsync(executionId, cancellationToken);
     }
 
     private async Task PersistPageAsync(
@@ -334,16 +288,6 @@ public sealed class ProductSyncService : IProductSyncService
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private static string? NormalizeOptionalSourceSystem(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-
-        string normalized = value.Trim().ToUpperInvariant();
-        if (!SourceSystems.All.Contains(normalized))
-            throw new AppException("El sistema de origen no es válido.");
-        return normalized;
-    }
 
     private static DateTime CurrentTime() => DateTime.UtcNow.AddHours(-5);
 }

@@ -46,8 +46,8 @@ para distinguir una anulación SAP, el conector deberá recibir y mapear el indi
 | `LineTotal` | `PPD.PPD_IMPBRU` (cantidad por precio, sin IGV) |
 | `IsActive` | `PPD.PPD_INDEST` |
 
-La cabecera y el detalle se guardan en `ReyplastCoreDB.dbo.Orders` y
-`ReyplastCoreDB.dbo.OrderDetails`. La relación es `OrderDetails.OrderId -> Orders.Id`. La cabecera
+La cabecera y el detalle se guardan en `RP_ReyPlastCoreBD.orders.Orders` y
+`RP_ReyPlastCoreBD.orders.OrderDetails`. La relación es `OrderDetails.OrderId -> Orders.Id`. La cabecera
 también se relaciona con `OrderSituations` mediante `Orders.SituationCode`. El listado de
 cabeceras no carga detalles; estos tienen su propia paginación para evitar respuestas grandes.
 
@@ -65,10 +65,29 @@ identidad estable de línea.
 
 ## API
 
-- `POST /api/orders/sync/osis`: encola la sincronización en segundo plano.
-- `GET /api/orders/sync/executions`: historial de sincronización de pedidos.
-- `GET /api/orders/sync/executions/{executionId}`: avance y duración.
-- `DELETE /api/orders/sync/executions/{executionId}`: cancelación cooperativa.
+Los controladores están separados por responsabilidad aunque las rutas públicas conservan el
+prefijo `api/orders`:
+
+| Controlador | Responsabilidad | Acceso a orígenes externos |
+|---|---|---|
+| `OrdersController` | Consultas paginadas, cabeceras y detalles. | Solo en la consulta puntual cuando falta el pedido o se solicita `refreshFromSource=true`. |
+| `OrderSynchronizationsController` | Punto de entrada único para encolar rango, documento individual o Delta Sync -- el caller indica el origen (`sourceSystem`/`SourceSystem`: OSIS o SAP) en vez de llamar a una ruta por origen. | OSIS/XIMESA y API SAP (internamente sigue despachando a `IOsisOrderSyncService`/`ISapOrderSyncService`, cada uno con su propio mapeo). |
+
+Esta separación impide que una consulta paginada inicie accidentalmente una carga masiva. Los
+endpoints de sincronización solo encolan trabajo en Hangfire (cola `core-sync`, máximo 3
+reintentos); si Hangfire no acepta el job, la API responde HTTP 503. No existe sincronización
+completa de OSIS: la operación normal es Delta y, para recuperar, Range por fechas.
+
+La persistencia también está separada: `IOrderSyncRepository` guarda lotes de pedidos e
+`IProductSyncRepository` lotes de productos y colores, así Orders no depende de componentes de
+Products. `ISyncExecutionRepository` no guarda nada (ni en memoria ni en BD): el historial vive
+solo en Hangfire.
+
+- `POST /api/orders/sync/range` (body: `{ sourceSystem, dateFrom, dateTo }`): encola la sincronización por rango inclusivo de fechas, desde OSIS o SAP.
+- `POST /api/orders/sync/document/{docNum}?sourceSystem=OSIS|SAP`: relee y actualiza un único pedido.
+- `POST /api/orders/sync/delta?sourceSystem=OSIS|SAP`: Delta Sync incremental. SAP responde `501` -- no tiene cursor incremental propio todavía.
+- Los endpoints de sincronización responden `202 Accepted` con el `jobId` de Hangfire; el avance,
+  los reintentos (máximo 3) y los errores se consultan en `/hangfire/jobs/details/{jobId}`.
 - `GET /api/orders`: cabeceras paginadas con filtros.
 - `GET /api/orders/{id}`: una cabecera.
 - `GET /api/orders/doc-number/{docNum}`: pedido completo por `PPC_NUMPPC`, con cabecera y líneas.
@@ -145,13 +164,117 @@ Pedido completo por `PPC_NUMPPC`, incluyendo todas sus líneas:
 GET /api/orders/26091153/complete
 ```
 
-Esta consulta aplica lectura bajo demanda: primero busca en `ReyplastCoreDB`; si no existe,
+Cuando un número puede existir en más de un origen se especifica `sourceSystem`:
+
+```http
+GET /api/orders/260800001/complete?sourceSystem=SAP
+GET /api/orders/260800001/complete?sourceSystem=OSIS
+```
+
+Esta consulta aplica lectura bajo demanda: primero busca en `RP_ReyPlastCoreBD`; si no existe,
 consulta exclusivamente `CIA_CODCIA = '01'` y ese `PPC_NUMPPC` en OSIS, persiste una cabecera
 con todos sus PPD y devuelve el resultado. No inicia ni recorre la sincronización completa.
 Si tampoco existe en OSIS, responde 404.
+
+Por defecto, un pedido existente se devuelve desde RP_ReyPlastCoreBD. Si el pedido no existe y se
+indica `sourceSystem`, se consulta únicamente ese origen y se importa solo ese documento. Para
+forzar la relectura de un pedido existente se usa `refreshFromSource=true`; en ese caso
+`sourceSystem` es obligatorio:
+
+```http
+GET /api/orders/260800001/complete?sourceSystem=SAP&refreshFromSource=true
+GET /api/orders/26091362/complete?sourceSystem=OSIS&refreshFromSource=true
+```
+
+La actualización puntual no recorre, desactiva ni modifica otros pedidos. La búsqueda paginada
+`GET /api/orders?search=...` permanece exclusivamente local y nunca inicia sincronizaciones.
 
 Solo los detalles del pedido por `PPC_NUMPPC`:
 
 ```http
 GET /api/orders/doc-number/26091153/details
 ```
+
+## Sincronización OSIS por rango
+
+La sincronización por rango consulta únicamente pedidos cuya fecha de creación `PPC_FECCRE`
+esté entre `dateFrom` y `dateTo`, ambas fechas inclusive. Se ejecuta en segundo plano, recorre
+el resultado con cursor y persiste cada página mediante las operaciones masivas existentes.
+
+```http
+POST /api/orders/sync/range
+Content-Type: application/json
+
+{
+  "sourceSystem": "OSIS",
+  "dateFrom": "2026-09-09",
+  "dateTo": "2026-09-09"
+}
+```
+
+El endpoint responde `202 Accepted` con el `jobId` de Hangfire. Su avance y duración se
+consultan en `/hangfire/jobs/details/{jobId}`.
+
+Si el pedido ya existe, se compara y actualiza; si no existe, se crea con todos sus detalles.
+Esta modalidad no relee fechas ajenas al rango y no desactiva pedidos fuera de él. Tampoco se
+ejecuta automáticamente al iniciar el API. El tamaño interno de lectura se configura mediante
+`Osis:OrderPageSize`, sin exponerlo como parámetro público.
+
+## Sincronización SAP por rango
+
+El adaptador SAP está aislado en `Infrastructure/Integrations/Sap/Orders`; no comparte DTOs ni
+mapper con OSIS. Consume `GET api/pedidos/completo?desde=...&hasta=...`, divide internamente el
+rango usando `SapOrdersApi:RangeWindowDays` y persiste cabeceras y detalles mediante operaciones
+masivas y una transacción local.
+
+```http
+POST /api/orders/sync/range
+Content-Type: application/json
+
+{
+  "sourceSystem": "SAP",
+  "dateFrom": "2026-08-03",
+  "dateTo": "2026-08-03"
+}
+```
+
+El endpoint responde `202 Accepted` con el `jobId`; el avance se consulta en
+`/hangfire/jobs/details/{jobId}`.
+
+Si un pedido SAP ya existe, se compara su cabecera y la secuencia completa de detalles. Los
+registros iguales no se duplican. Si cambia cualquier detalle, el conjunto del pedido se
+reemplaza dentro de la misma transacción porque el contrato externo no entrega `LineNum`.
+`ItemCode` se conserva exactamente como llega, `LineNumber` queda null y la identidad ordinal
+utilizada durante la sincronización nunca se expone en la API.
+
+## Aviso de fin de sincronización (SignalR)
+
+Cuando un job de pedidos (`RANGE` o `DELTA`, OSIS o SAP) termina bien, el API emite el evento
+`OrdersSynchronized` en el hub `/hubs/sync`. Es solo de notificación: los clientes escuchan y no
+invocan métodos. Si el job se cancela o falla no se emite nada; tras un reintento exitoso de
+Hangfire sí se emite.
+
+```json
+{
+  "executionId": "…",
+  "sourceSystem": "OSIS",
+  "kind": "RANGE",
+  "dateFrom": "2026-09-27T00:00:00",
+  "dateTo": "2026-09-29T00:00:00",
+  "changedDateFrom": "2026-09-28T00:00:00",
+  "changedDateTo": "2026-09-29T00:00:00",
+  "recordsRead": 412,
+  "recordsCreated": 3,
+  "recordsChanged": 5,
+  "recordsUnchanged": 404,
+  "childRecordsCreated": 18,
+  "childRecordsChanged": 7,
+  "hasChanges": true,
+  "completedAt": "2026-09-29T10:41:12"
+}
+```
+
+`changedDateFrom`/`changedDateTo` son la `DocDate` mínima y máxima de los pedidos que realmente
+cambiaron (cabecera o líneas); los pedidos sin cambios ("touch") no cuentan. Su consumidor es
+MasterLogicApi (`ReyplastCoreSyncListener`), que filtra por su `SourceSystem` y reenvía el evento
+a Gestión de Pickers por su propio hub autenticado. Los navegadores no se conectan a este hub.

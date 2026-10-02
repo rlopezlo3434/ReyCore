@@ -1,47 +1,85 @@
-using System.Collections.Concurrent;
-using System.Threading.Channels;
+using Hangfire;
+using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.Interfaces.Services;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
-/// <summary>Worker inactivo al arranque; procesa solamente pedidos encolados por el endpoint.</summary>
-public sealed class OrderSyncQueue : BackgroundService, IOrderSyncQueue
+public sealed class OrderSyncQueue : IOrderSyncQueue
 {
-    private readonly Channel<Guid> _channel = Channel.CreateUnbounded<Guid>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
-    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _cancellations = new();
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IBackgroundJobClient _jobs;
     private readonly ILogger<OrderSyncQueue> _logger;
-    public OrderSyncQueue(IServiceScopeFactory scopeFactory, ILogger<OrderSyncQueue> logger)
-    { _scopeFactory = scopeFactory; _logger = logger; }
 
-    public bool TryEnqueueOsis(Guid executionId)
+    public OrderSyncQueue(IBackgroundJobClient jobs, ILogger<OrderSyncQueue> logger)
     {
-        CancellationTokenSource token = new();
-        if (!_cancellations.TryAdd(executionId, token)) { token.Dispose(); return false; }
-        if (_channel.Writer.TryWrite(executionId)) return true;
-        _cancellations.TryRemove(executionId, out _); token.Dispose(); return false;
+        _jobs = jobs;
+        _logger = logger;
     }
 
-    public bool TryCancel(Guid executionId)
-    {
-        if (!_cancellations.TryGetValue(executionId, out var token)) return false;
-        token.Cancel(); return true;
-    }
+    public Task<string?> EnqueueOsisRangeAsync(Guid executionId, DateTime dateFrom, DateTime dateTo,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(Enqueue(executionId, "OSIS_RANGE", dateFrom.Date, dateTo.Date));
+    public Task<string?> EnqueueSapRangeAsync(Guid executionId, DateTime dateFrom, DateTime dateTo,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(Enqueue(executionId, "SAP_RANGE", dateFrom.Date, dateTo.Date));
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    private string? Enqueue(Guid executionId, string kind, DateTime? dateFrom, DateTime? dateTo)
     {
-        await foreach (Guid id in _channel.Reader.ReadAllAsync(stoppingToken))
+        try
         {
-            if (!_cancellations.TryGetValue(id, out var token)) continue;
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, token.Token);
-            try
-            {
-                using IServiceScope scope = _scopeFactory.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<IOrderSyncService>().ExecuteOsisAsync(id, linked.Token);
-            }
-            catch (Exception exception) { _logger.LogError(exception, "Falló la sincronización de pedidos {Id}.", id); }
-            finally { _cancellations.TryRemove(id, out _); token.Dispose(); }
+            return _jobs.Enqueue<OrderSyncBackgroundJob>(job => job.ExecuteAsync(
+                executionId, kind, dateFrom, dateTo, JobCancellationToken.Null));
         }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "No se pudo encolar la sincronización {ExecutionId} en Hangfire.", executionId);
+            return null;
+        }
+    }
+}
+
+public sealed class OrderSyncBackgroundJob
+{
+    private readonly IOsisOrderSyncService _osis;
+    private readonly ISapOrderSyncService _sap;
+    private readonly IOrderSyncNotifier _notifier;
+
+    public OrderSyncBackgroundJob(IOsisOrderSyncService osis, ISapOrderSyncService sap, IOrderSyncNotifier notifier)
+    {
+        _osis = osis; _sap = sap; _notifier = notifier;
+    }
+
+    [Queue("core-sync")]
+    [DisableConcurrentExecution(timeoutInSeconds: 21600)]
+    [AutomaticRetry(Attempts = 3)]
+    public async Task ExecuteAsync(Guid executionId, string kind, DateTime? dateFrom, DateTime? dateTo,
+        IJobCancellationToken cancellationToken)
+    {
+        await ExecuteCoreAsync(executionId, kind, dateFrom, dateTo, cancellationToken);
+    }
+
+    /// <summary>Compatibilidad temporal para jobs de rango encolados antes de retirar Delta.</summary>
+    [Queue("core-sync")]
+    [DisableConcurrentExecution(timeoutInSeconds: 21600)]
+    [AutomaticRetry(Attempts = 3)]
+    public async Task ExecuteAsync(Guid executionId, string kind, DateTime? dateFrom, DateTime? dateTo,
+        int? obsoleteOverlapSeconds, IJobCancellationToken cancellationToken)
+    {
+        await ExecuteCoreAsync(executionId, kind, dateFrom, dateTo, cancellationToken);
+    }
+
+    private async Task ExecuteCoreAsync(Guid executionId, string kind, DateTime? dateFrom, DateTime? dateTo,
+        IJobCancellationToken cancellationToken)
+    {
+        CancellationToken token = cancellationToken.ShutdownToken;
+        OrdersSynchronizedEvent? result = kind switch
+        {
+            "OSIS_RANGE" => await _osis.ExecuteRangeAsync(executionId, dateFrom!.Value, dateTo!.Value, token),
+            "SAP_RANGE" => await _sap.ExecuteRangeAsync(executionId, dateFrom!.Value, dateTo!.Value, token),
+            _ => throw new InvalidOperationException($"Tipo de sincronización desconocido: {kind}.")
+        };
+        // Solo al terminar bien (null = cancelada). Si falla, Hangfire reintenta y el aviso sale
+        // en el intento que complete.
+        if (result is not null)
+            await _notifier.PublishOrdersSynchronizedAsync(result, CancellationToken.None);
     }
 }
