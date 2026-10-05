@@ -67,6 +67,11 @@ public sealed class OrderRepository : IOrderRepository
         IQueryable<SalesOrder> query = _context.Orders.AsNoTracking()
             .Where(order => order.SourceSystem == filter.SourceSystem && order.IsActive
                 && order.SituationCode == filter.SituationCode);
+        if (filter.ChannelCodes.Count > 0)
+        {
+            IReadOnlyCollection<string> channelCodes = filter.ChannelCodes;
+            query = query.Where(order => order.ChannelCode != null && channelCodes.Contains(order.ChannelCode));
+        }
         if (filter.DateFrom.HasValue)
         {
             DateTime from = filter.DateFrom.Value.Date;

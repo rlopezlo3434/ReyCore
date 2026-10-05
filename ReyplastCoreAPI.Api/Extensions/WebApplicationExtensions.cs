@@ -28,6 +28,10 @@ public static class WebApplicationExtensions
     /// </summary>
     public static WebApplication UseOrderSyncSchedules(this WebApplication app)
     {
+        // Solo los servidores que ejecutan tareas registran los jobs: un API levantado en una PC de desarrollo
+        // (o un servidor con otra versión) contra la misma base pisaba la definición del job de producción.
+        if (!app.Configuration.GetValue("Hangfire:ServerEnabled", true)) return app;
+
         IRecurringJobManager recurringJobs = app.Services.GetRequiredService<IRecurringJobManager>();
         OsisApprovedHourlySyncOptions options = app.Services
             .GetRequiredService<IOptions<OsisApprovedHourlySyncOptions>>().Value;
@@ -38,26 +42,18 @@ public static class WebApplicationExtensions
             return app;
         }
 
-        // Solo dentro de la ventana (por defecto "0 6-22 * * *"): de 23:00 a 05:59 no se programa. En
-        // Hangfire > Recurring Jobs se ve el cron con su descripción, la zona horaria y la próxima ejecución.
-        options.Validate();
-        string windowLabel = options.WindowLabel;
-        recurringJobs.AddOrUpdate<OsisApprovedOrdersHourlyJob>(
-            OsisApprovedOrdersHourlyJob.RecurringJobId,
-            job => job.ExecuteAsync(windowLabel, JobCancellationToken.Null),
-            options.Cron,
-            new RecurringJobOptions { TimeZone = ResolveTimeZone(options.TimeZoneId) });
-        return app;
-    }
-
-    // Windows usa "SA Pacific Standard Time"; si el servidor solo reconoce IANA, "America/Lima".
-    private static TimeZoneInfo ResolveTimeZone(string timeZoneId)
-    {
-        foreach (string id in new[] { timeZoneId, "SA Pacific Standard Time", "America/Lima" })
+        // Si quedó deshabilitado o con error (Hangfire lo apaga cuando no puede cargarlo), se recrea desde cero;
+        // si está sano, AddOrUpdate solo actualiza la definición. El vigilante repite esta revisión cada 10 min.
+        JobStorage storage = app.Services.GetRequiredService<JobStorage>();
+        if (OsisApprovedOrdersSchedule.FindProblem(storage) is { } problem
+            && !problem.StartsWith("El job recurrente no existe", StringComparison.Ordinal))
         {
-            if (string.IsNullOrWhiteSpace(id)) continue;
-            if (TimeZoneInfo.TryFindSystemTimeZoneById(id, out TimeZoneInfo? zone)) return zone;
+            app.Logger.LogWarning("Job {JobId} recreado al iniciar: {Problem}", OsisApprovedOrdersHourlyJob.RecurringJobId, problem);
+            OsisApprovedOrdersSchedule.Repair(recurringJobs, options);
+            return app;
         }
-        return TimeZoneInfo.CreateCustomTimeZone("Peru", TimeSpan.FromHours(-5), "Perú (UTC-5)", "Perú (UTC-5)");
+
+        OsisApprovedOrdersSchedule.Register(recurringJobs, options);
+        return app;
     }
 }

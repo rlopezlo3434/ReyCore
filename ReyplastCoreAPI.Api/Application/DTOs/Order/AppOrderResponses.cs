@@ -18,8 +18,8 @@ public sealed class AppOrderQuery
     public int PageSize { get; set; }
 }
 
-/// <summary>Filtros ya validados que recibe el repositorio. Por DocNum solo se usan SourceSystem y
-/// SituationCode; el resto viaja vacío.</summary>
+/// <summary>Filtros ya validados que recibe el repositorio. Por DocNum solo se usan SourceSystem,
+/// SituationCode y ChannelCodes; el resto viaja vacío. ChannelCodes vacío = todos los canales.</summary>
 public sealed record AppOrderFilter(
     string SourceSystem,
     string SituationCode,
@@ -27,7 +27,24 @@ public sealed record AppOrderFilter(
     DateTime? DateFrom,
     DateTime? DateTo,
     string? CardCode,
-    string? CardName);
+    string? CardName,
+    IReadOnlyCollection<string> ChannelCodes);
+
+/// <summary>Configuración del listado por aplicación (sección AppOrders).</summary>
+public sealed class AppOrderOptions
+{
+    public const string SectionName = "AppOrders";
+
+    public AppOrderAppOptions SalesPlace { get; set; } = new();
+}
+
+public sealed class AppOrderAppOptions
+{
+    /// <summary>Canales (ChannelCode) que ve la aplicación; vacío = todos. SalesPlace por ahora solo "11"
+    /// (MAYORISTA LIMA). Se define solo en appsettings: los arreglos de configuración se suman a los
+    /// valores por defecto, así que aquí no se pone ninguno.</summary>
+    public string[] ChannelCodes { get; set; } = Array.Empty<string>();
+}
 
 /// <summary>Página del listado por aplicación. Misma forma que consumía SalesPlace
 /// (page/pageSize/totalRecords/totalPages) para que no tenga que remapear.</summary>

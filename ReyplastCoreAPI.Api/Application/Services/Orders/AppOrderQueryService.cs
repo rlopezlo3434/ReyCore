@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using Microsoft.Extensions.Options;
 using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Application.Interfaces.Services;
@@ -34,10 +35,12 @@ public sealed class AppOrderQueryService : IAppOrderQueryService
         };
 
     private readonly IOrderRepository _orders;
+    private readonly AppOrderOptions _options;
 
-    public AppOrderQueryService(IOrderRepository orders)
+    public AppOrderQueryService(IOrderRepository orders, IOptions<AppOrderOptions> options)
     {
         _orders = orders;
+        _options = options.Value;
     }
 
     public async Task<object> GetAsync(AppOrderQuery query, CancellationToken cancellationToken)
@@ -52,18 +55,28 @@ public sealed class AppOrderQueryService : IAppOrderQueryService
         string? docNum = TrimOrNull(query.DocNum);
         if (docNum is null) ValidateDateRange(query.DateFrom, query.DateTo);
         ValidatePaging(query.PageNumber, query.PageSize);
-        AppOrderFilter filter = docNum is null
-            ? new AppOrderFilter(sourceSystem, approvedSituationCode, null, query.DateFrom, query.DateTo,
-                TrimOrNull(query.CardCode), TrimOrNull(query.CardName))
-            : new AppOrderFilter(sourceSystem, approvedSituationCode, docNum, null, null, null, null);
 
         return appCode switch
         {
-            SalesPlaceAppCode => await PageAsync(filter, query.PageNumber, query.PageSize, SalesPlaceProjection, cancellationToken),
+            SalesPlaceAppCode => await PageAsync(
+                BuildFilter(query, sourceSystem, approvedSituationCode, docNum, ChannelCodes(_options.SalesPlace)),
+                query.PageNumber, query.PageSize, SalesPlaceProjection, cancellationToken),
             _ => throw new AppException(
                 $"La aplicación '{appCode}' no tiene un listado de pedidos disponible. Aplicaciones habilitadas: {SalesPlaceAppCode}.")
         };
     }
+
+    // El canal aplica siempre, también al buscar por número: un pedido de otro canal no existe para la app.
+    private static AppOrderFilter BuildFilter(AppOrderQuery query, string sourceSystem, string situationCode,
+        string? docNum, IReadOnlyCollection<string> channelCodes) =>
+        docNum is null
+            ? new AppOrderFilter(sourceSystem, situationCode, null, query.DateFrom, query.DateTo,
+                TrimOrNull(query.CardCode), TrimOrNull(query.CardName), channelCodes)
+            : new AppOrderFilter(sourceSystem, situationCode, docNum, null, null, null, null, channelCodes);
+
+    private static IReadOnlyCollection<string> ChannelCodes(AppOrderAppOptions app) =>
+        app.ChannelCodes.Select(code => code?.Trim()).OfType<string>().Where(code => code.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
     private async Task<AppOrderPage<TItem>> PageAsync<TItem>(AppOrderFilter filter, int pageNumber, int pageSize,
         Expression<Func<SalesOrder, TItem>> projection, CancellationToken cancellationToken)

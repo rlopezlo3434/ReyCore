@@ -3,6 +3,7 @@ using ReyplastCoreAPI.Application.Services.Products;
 using ReyplastCoreAPI.Application.Services.Orders;
 using ReyplastCoreAPI.Application.Services.Channels;
 using ReyplastCoreAPI.Application.DTOs.Integrations.Sap;
+using ReyplastCoreAPI.Application.DTOs.Order;
 
 namespace ReyplastCoreAPI.Application;
 
@@ -16,6 +17,8 @@ public static class DependencyInjection
             .Validate(options => options.DatabaseBatchSize > 0,
                 "SapOrdersApi:DatabaseBatchSize debe ser mayor que cero.")
             .ValidateOnStart();
+        services.AddOptions<AppOrderOptions>()
+            .Bind(configuration.GetSection(AppOrderOptions.SectionName));
         services.AddScoped<IProductService, ProductService>();
         services.AddScoped<IProductSyncService, ProductSyncService>();
         services.AddScoped<IOrderService, OrderService>();

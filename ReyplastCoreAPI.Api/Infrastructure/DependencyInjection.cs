@@ -3,6 +3,10 @@ using Hangfire;
 using Hangfire.SqlServer;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Application.Interfaces.Integrations;
+using ReyplastCoreAPI.Application.Interfaces.Services;
+using ReyplastCoreAPI.Application.Services.Orders;
+using ReyplastCoreAPI.Infrastructure.BackgroundJobs;
+using ReyplastCoreAPI.Infrastructure.Integrations.Communication;
 using ReyplastCoreAPI.Infrastructure.Integrations.Osis;
 using ReyplastCoreAPI.Infrastructure.Integrations.Osis.Persistence;
 using ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders;
@@ -20,7 +24,7 @@ public static class DependencyInjection
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException("ConnectionStrings:SqlServerConnection no está configurado.");
         services.AddDbContext<ReyplastCoreDbContext>(options => options.UseSqlServer(connectionString));
-        services.AddHangfire(configuration => configuration
+        services.AddHangfire((provider, hangfire) => hangfire
             .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
             .UseSimpleAssemblyNameTypeSerializer()
             .UseRecommendedSerializerSettings()
@@ -33,10 +37,14 @@ public static class DependencyInjection
                 CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
                 UseRecommendedIsolationLevel = true,
                 DisableGlobalLocks = true
-            }));
-        // Hangfire:ServerEnabled=false en un servidor = ese servidor no ejecuta ni programa tareas (solo encola y
-        // muestra el dashboard). Con varios servidores sobre la misma base, uno con versión vieja tomaba la tarea
-        // y fallaba con "Could not resolve type"; así solo corre donde se decide.
+            })
+            // Aviso por correo cuando un job agota sus reintentos (ver JobFailureAlertFilter).
+            .UseFilter(new JobFailureAlertFilter(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<ILogger<JobFailureAlertFilter>>())));
+        // Hangfire:ServerEnabled=false en un servidor = ese servidor no ejecuta, no programa ni registra tareas
+        // (solo encola y muestra el dashboard). Con varios servidores sobre la misma base, uno con versión vieja
+        // tomaba la tarea y fallaba con "Could not resolve type"; así solo corre donde se decide.
         if (configuration.GetValue("Hangfire:ServerEnabled", true))
         {
             services.AddHangfireServer(options =>
@@ -44,7 +52,19 @@ public static class DependencyInjection
                 options.WorkerCount = 2;
                 options.Queues = new[] { "core-sync", "default" };
             });
+            // Reactiva el job horario si Hangfire lo deshabilita (revisa al arrancar y cada 10 minutos).
+            services.AddHostedService<OsisApprovedOrdersScheduleWatchdog>();
         }
+
+        services.AddOptions<SyncAlertOptions>().Bind(configuration.GetSection(SyncAlertOptions.SectionName));
+        services.AddHttpClient<ISyncFailureAlerter, CommunicationApiSyncFailureAlerter>((provider, client) =>
+        {
+            SyncAlertOptions alerts = provider.GetRequiredService<
+                Microsoft.Extensions.Options.IOptions<SyncAlertOptions>>().Value;
+            if (Uri.TryCreate(alerts.CommunicationApiBaseUrl, UriKind.Absolute, out Uri? baseUrl))
+                client.BaseAddress = new Uri(baseUrl.ToString().TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(alerts.TimeoutSeconds, 5));
+        });
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddScoped<IProductSyncRepository, ProductSyncRepository>();
         services.AddScoped<ISyncExecutionRepository, SyncExecutionRepository>();
@@ -63,6 +83,8 @@ public static class DependencyInjection
                 "Osis:EnabledSaleCode es obligatorio.")
             .Validate(options => options.OrderPageSize > 0,
                 "Osis:OrderPageSize debe ser mayor que cero.")
+            .Validate(options => options.OrderDetailBatchSize is > 0 and <= 100,
+                "Osis:OrderDetailBatchSize debe estar entre 1 y 100.")
             .ValidateOnStart();
         // Reintentos ante fallos transitorios de OSIS: EnableRetryOnFailure cubre los errores
         // transitorios de las consultas (deadlocks, conexión cortada, etc.; no reintenta un timeout de

@@ -69,9 +69,12 @@ public sealed class OsisApprovedOrdersHourlyJob
 
     // "schedule" solo sirve para que el dashboard muestre la ventana en el nombre de cada ejecución
     // ("OSIS · pedidos aprobados del día · 06:00–22:00 hora Perú"); la regla vive en las opciones.
+    // Reintentos a los 5 y 10 minutos: los fallos vistos son timeouts de OSIS en horas de carga, y
+    // reintentar a los 30-45 s (lo que hace Hangfire por defecto) volvía a chocar con la misma carga.
+    // Con el timeout de 300 s, intento + reintentos terminan dentro de la hora.
     [Queue("core-sync")]
     [DisableConcurrentExecution(timeoutInSeconds: 3600)]
-    [AutomaticRetry(Attempts = 2)]
+    [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 300, 600 })]
     [DisplayName("OSIS · pedidos aprobados del día · {0}")]
     public async Task<string> ExecuteAsync(string schedule, IJobCancellationToken cancellationToken)
     {
@@ -95,21 +98,42 @@ public sealed class OsisApprovedOrdersHourlyJob
         }
 
         DateTime today = startedAt.Date;
-        Guid executionId = Guid.NewGuid();
+        List<string> summaries = new();
 
+        // Primera ejecución del día (06:00): también relee AYER completo. Cada ejecución lee solo su día, así
+        // que lo aprobado después de la última ejecución exitosa de ayer (las de 20:00–22:00 fallaban por
+        // timeout, y de 22:00 a 23:59 no hay ninguna) no se sincronizaba nunca.
+        if (startedAt.Hour == _options.FirstHour)
+        {
+            string? yesterday = await SyncDayAsync(today.AddDays(-1), "ayer", startedAt, cancellationToken);
+            if (yesterday is null) return "Cancelada.";
+            summaries.Add(yesterday);
+        }
+
+        string? current = await SyncDayAsync(today, "del día", startedAt, cancellationToken);
+        if (current is null) return "Cancelada.";
+        summaries.Add(current);
+
+        string summary = string.Join(" | ", summaries);
+        _logger.LogInformation("Sincronización horaria de pedidos aprobados: {Summary}", summary);
+        return summary;
+    }
+
+    // Sincroniza los aprobados de una fecha y avisa a MasterLogic si hubo cambios; null si se canceló.
+    private async Task<string?> SyncDayAsync(DateTime date, string label, DateTime startedAt,
+        IJobCancellationToken cancellationToken)
+    {
         OrdersSynchronizedEvent? result = await _osis.ExecuteApprovedDayAsync(
-            executionId, today, cancellationToken.ShutdownToken);
-        if (result is null) return "Cancelada.";
+            Guid.NewGuid(), date, cancellationToken.ShutdownToken);
+        if (result is null) return null;
 
         if (result.HasChanges)
             await _notifier.PublishOrdersSynchronizedAsync(result, CancellationToken.None);
 
-        string summary = string.Format(Peru,
-            "{0:dd/MM/yyyy} (hora Perú) · {1} pedidos aprobados del día · {2} nuevos · {3} con cambios · {4} sin cambios · {5:HH:mm:ss}–{6:HH:mm:ss}{7}",
-            today, result.RecordsRead, result.RecordsCreated, result.RecordsChanged, result.RecordsUnchanged,
+        return string.Format(Peru,
+            "{0:dd/MM/yyyy} (hora Perú) · {1} pedidos aprobados {2} · {3} nuevos · {4} con cambios · {5} sin cambios · {6:HH:mm:ss}–{7:HH:mm:ss}{8}",
+            date, result.RecordsRead, label, result.RecordsCreated, result.RecordsChanged, result.RecordsUnchanged,
             startedAt, PeruNow(), result.HasChanges ? " · MasterLogic notificado" : string.Empty);
-        _logger.LogInformation("Sincronización horaria de pedidos aprobados: {Summary}", summary);
-        return summary;
     }
 
     private bool IsOrderRangeSyncRunning()

@@ -22,7 +22,8 @@ public sealed class OrdersController : ControllerBase
     /// <summary>Listado de pedidos directo de ReyplastCoreDB con los campos que necesita la aplicación
     /// indicada (AppCode de PadLock). Hoy solo "SP" (SalesPlace): id, docNum, cardCode, cardName,
     /// channelCode, channelName, approvalDate, totalItems, totalUnits. Solo devuelve pedidos aprobados
-    /// (OSIS: situación 2 "PEDIDO APROBADO"). Si se envía docNum, solo se usan appCode y sourceSystem:
+    /// (OSIS: situación 2 "PEDIDO APROBADO") y solo de los canales de la app (AppOrders:{App}:ChannelCodes;
+    /// SP por ahora solo el canal 11). Si se envía docNum, solo se usan appCode, sourceSystem y el canal:
     /// las fechas no son obligatorias y ni ellas ni los demás filtros se aplican.</summary>
     /// <param name="appCode">Aplicación consumidora, por ejemplo SP.</param>
     /// <param name="sourceSystem">Origen de los pedidos: OSIS o SAP.</param>
