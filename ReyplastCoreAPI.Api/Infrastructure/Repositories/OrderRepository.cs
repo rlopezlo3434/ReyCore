@@ -1,11 +1,13 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using System.Linq.Expressions;
 using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.DTOs.Product.Response;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Domain.Catalog;
+using ReyplastCoreAPI.Domain.Orders;
 using ReyplastCoreAPI.Domain.Orders.Entities;
 using ReyplastCoreAPI.Infrastructure.Persistence;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Infrastructure.Repositories;
 
@@ -26,7 +28,11 @@ public sealed class OrderRepository : IOrderRepository
         if (channelCodes.Count > 0)
             query = query.Where(order => order.ChannelCode != null && channelCodes.Contains(order.ChannelCode));
         if (dateFrom.HasValue) query = query.Where(order => order.DocDate >= dateFrom.Value.Date);
-        if (dateTo.HasValue) query = query.Where(order => order.DocDate < dateTo.Value.Date.AddDays(1));
+        if (dateTo.HasValue)
+        {
+            DateTime toExclusive = DateHelper.EndExclusive(dateTo.Value);
+            query = query.Where(order => order.DocDate < toExclusive);
+        }
         if (sourceSystems.Count > 0)
             query = query.Where(order => sourceSystems.Contains(order.SourceSystem));
 
@@ -37,28 +43,33 @@ public sealed class OrderRepository : IOrderRepository
         // digito). Se usa ApprovalDate con fallback a DocDate solo por si algun pedido llegara sin
         // aprobar (no deberia darse con el filtro de situationCode, pero evita que un ApprovalDate
         // nulo lo mande al tope/fondo de la pagina de forma imprevisible).
-        var pageItems = await query.OrderByDescending(order => order.ApprovalDate ?? order.DocDate)
+        List<SalesOrder> items = await query.OrderByDescending(order => order.ApprovalDate ?? order.DocDate)
             .ThenByDescending(order => order.DocNum)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
-            // Una linea anulada en OSIS (PPD_INDEST inactivo) sigue en Details -- se necesita para
-            // poder mostrarla marcada como anulada en el detalle -- pero no cuenta como parte real
-            // del pedido en el listado (antes inflaba "Lineas" con lineas que ya no aplican).
-            .Select(order => new {
-                Order = order,
-                TotalItems = order.Details.Count(detail => detail.IsActive),
-                TotalUnits = order.Details.Where(detail => detail.IsActive)
-                    .Sum(detail => (decimal?)(detail.Quantity >= detail.SuspendedQuantity
-                        ? detail.Quantity - detail.SuspendedQuantity : 0m)) ?? 0m
-            })
             .ToListAsync(cancellationToken);
-        List<SalesOrder> items = pageItems.Select(item =>
-        {
-            item.Order.TotalItems = item.TotalItems;
-            item.Order.TotalUnits = item.TotalUnits;
-            return item.Order;
-        }).ToList();
+        // Una linea anulada en OSIS (PPD_INDEST inactivo) sigue en Details -- se necesita para poder
+        // mostrarla marcada como anulada en el detalle -- pero no cuenta como parte real del pedido.
+        Dictionary<Guid, OrderLineTotalsRow> totals = await GetLineTotalsAsync(items.Select(order => order.Id).ToArray(), cancellationToken);
+        foreach (SalesOrder order in items)
+            if (totals.TryGetValue(order.Id, out OrderLineTotalsRow? row))
+            {
+                order.TotalItems = row.TotalItems;
+                order.TotalUnits = row.TotalUnits;
+            }
         return Page(items, pageNumber, pageSize, total);
+    }
+
+    // Regla única: ver OrderLineTotals.
+    public async Task<Dictionary<Guid, OrderLineTotalsRow>> GetLineTotalsAsync(IReadOnlyCollection<Guid> orderIds,
+        CancellationToken cancellationToken)
+    {
+        if (orderIds.Count == 0) return new Dictionary<Guid, OrderLineTotalsRow>();
+        Guid[] ids = orderIds.Distinct().ToArray();
+        return await _context.Orders.AsNoTracking()
+            .Where(order => ids.Contains(order.Id))
+            .Select(OrderLineTotals.Projection)
+            .ToDictionaryAsync(row => row.OrderId, cancellationToken);
     }
 
     public async Task<(IReadOnlyList<TItem> Items, int Total)> GetOrdersByApplicationCodeAsync<TItem>(AppOrderFilter filter,
@@ -79,7 +90,7 @@ public sealed class OrderRepository : IOrderRepository
         }
         if (filter.DateTo.HasValue)
         {
-            DateTime toExclusive = filter.DateTo.Value.Date.AddDays(1);
+            DateTime toExclusive = DateHelper.EndExclusive(filter.DateTo.Value);
             query = query.Where(order => order.DocDate < toExclusive);
         }
         // Prefijo: sargable sobre IX_Orders_Source_DocNum (un LIKE '%x%' recorreria toda la tabla).
@@ -112,9 +123,12 @@ public sealed class OrderRepository : IOrderRepository
     {
         SalesOrder? order = await _context.Orders.AsNoTracking().Include(item => item.Situation)
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (order is not null)
-            order.TotalItems = await _context.OrderDetails.AsNoTracking()
-                .CountAsync(detail => detail.OrderId == id && detail.IsActive, cancellationToken);
+        if (order is not null
+            && (await GetLineTotalsAsync(new[] { id }, cancellationToken)).TryGetValue(id, out OrderLineTotalsRow? row))
+        {
+            order.TotalItems = row.TotalItems;
+            order.TotalUnits = row.TotalUnits;
+        }
         return order;
     }
 
@@ -157,16 +171,17 @@ public sealed class OrderRepository : IOrderRepository
     }
 
     public async Task<List<SalesOrder>> GetByKeysAsync(IReadOnlyCollection<string> keys,
-        CancellationToken cancellationToken)
+        bool includeDetails, CancellationToken cancellationToken)
     {
-        string[] docNums = keys.Select(key => key.Split('|', 2)[1]).Distinct().ToArray();
-        List<SalesOrder> candidates = await _context.Orders.AsNoTracking()
+        string[] docNums = keys.Select(OrderSourceKey.DocNum).Distinct().ToArray();
+        IQueryable<SalesOrder> query = _context.Orders.AsNoTracking()
             // Esta llave BranchCode|DocNum pertenece al contrato OSIS. El filtro evita que
             // una coincidencia de DocNum de otro origen participe en el upsert de XIMESA.
             .Where(order => order.SourceSystem == SourceSystems.Osis
-                && docNums.Contains(order.DocNum))
-            .Include(order => order.Details)
-            .AsSplitQuery().ToListAsync(cancellationToken);
+                && docNums.Contains(order.DocNum));
+        // La sincronización masiva solo compara cabeceras: cargar las líneas guardadas sería trabajo perdido.
+        if (includeDetails) query = query.Include(order => order.Details).AsSplitQuery();
+        List<SalesOrder> candidates = await query.ToListAsync(cancellationToken);
         HashSet<string> requested = keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         return candidates.Where(order => requested.Contains($"{order.BranchCode}|{order.DocNum}")).ToList();
     }
@@ -193,7 +208,11 @@ public sealed class OrderRepository : IOrderRepository
         if (situationCodes.Count > 0)
             query = query.Where(order => situationCodes.Contains(order.SituationCode));
         if (dateFrom.HasValue) query = query.Where(order => order.DocDate >= dateFrom.Value.Date);
-        if (dateTo.HasValue) query = query.Where(order => order.DocDate < dateTo.Value.Date.AddDays(1));
+        if (dateTo.HasValue)
+        {
+            DateTime toExclusive = DateHelper.EndExclusive(dateTo.Value);
+            query = query.Where(order => order.DocDate < toExclusive);
+        }
         if (sourceSystems.Count > 0)
             query = query.Where(order => sourceSystems.Contains(order.SourceSystem));
 

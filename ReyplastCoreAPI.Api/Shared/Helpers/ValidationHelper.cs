@@ -1,4 +1,5 @@
-using ReyplastCoreAPI.Shared.Exceptions;
+﻿using ReyplastCoreAPI.Shared.Exceptions;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Shared.Helpers;
 
@@ -21,8 +22,8 @@ public static class ValidationHelper
 
     public static void ThrowIfInvalidPage(int pageNumber, int pageSize)
     {
-        if (pageNumber <= 0) throw new AppException("El número de página debe ser mayor a cero.");
+        if (pageNumber <= 0) throw new AppException("El número de página (pageNumber) debe ser mayor que cero.");
         if (pageSize <= 0)
-            throw new AppException("El tamaño de página debe ser mayor a cero.");
+            throw new AppException("La cantidad de registros por página (pageSize) debe ser mayor que cero.");
     }
 }

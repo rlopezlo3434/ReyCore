@@ -1,5 +1,6 @@
-using ReyplastCoreAPI.Application.DTOs.Order;
+﻿using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
@@ -41,6 +42,6 @@ public sealed class OrderSyncChangeWindow
         ChildRecordsCreated = execution.ChildRecordsCreated,
         ChildRecordsChanged = execution.ChildRecordsChanged,
         HasChanges = From is not null,
-        CompletedAt = execution.CompletedAt ?? DateTime.UtcNow.AddHours(-5)
+        CompletedAt = execution.CompletedAt ?? DateHelper.PeruNow()
     };
 }

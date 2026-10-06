@@ -1,9 +1,10 @@
-using ReyplastCoreAPI.Application.DTOs.Order;
+﻿using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.DTOs.Product.Response;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Application.Interfaces.Services;
 using ReyplastCoreAPI.Domain.Catalog;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
+using ReyplastCoreAPI.Domain.Orders;
 using ReyplastCoreAPI.Domain.Orders.Entities;
 using ReyplastCoreAPI.Shared.Exceptions;
 using ReyplastCoreAPI.Shared.Helpers;
@@ -42,7 +43,7 @@ public sealed class OrderService : IOrderService
         if (dateFrom.HasValue && dateTo.HasValue && dateFrom.Value.Date > dateTo.Value.Date)
             throw new AppException("dateFrom no puede ser mayor que dateTo.");
         PaginatedResponse<SalesOrder> page = await _repository.GetPagedAsync(pageNumber, pageSize,
-            NormalizeValues(search), situations, NormalizeValues(channelCode), dateFrom, dateTo, sources,
+            TextHelper.SplitValues(search), situations, TextHelper.SplitValues(channelCode), dateFrom, dateTo, sources,
             cancellationToken);
         PaginatedResponse<OrderResponse> result = MapPage(page, OrderMapper.ToResponse);
         Dictionary<string, string> displayNames = await GetChannelDisplayNamesAsync(cancellationToken);
@@ -81,9 +82,7 @@ public sealed class OrderService : IOrderService
         // Una linea anulada en OSIS (PPD_INDEST inactivo) se sigue sincronizando -- se necesita
         // para poder mostrarla marcada como anulada -- pero no debe contar como parte real del
         // pedido (ver TotalItems en OrderRepository.GetPagedAsync/GetByIdAsync, mismo criterio).
-        order.TotalItems = order.Details.Count(detail => detail.IsActive);
-        order.TotalUnits = order.Details.Where(detail => detail.IsActive)
-            .Sum(detail => Math.Max(0, detail.Quantity - detail.SuspendedQuantity));
+        OrderLineTotals.Apply(order);
         CompleteOrderResponse response = OrderMapper.ToCompleteResponse(order);
         ApplyChannelDisplayName(response.Header, await GetChannelDisplayNamesAsync(cancellationToken));
         return response;
@@ -124,9 +123,7 @@ public sealed class OrderService : IOrderService
                 continue;
             }
             SalesOrder order = group[0];
-            order.TotalItems = order.Details.Count(detail => detail.IsActive);
-            order.TotalUnits = order.Details.Where(detail => detail.IsActive)
-                .Sum(detail => Math.Max(0, detail.Quantity - detail.SuspendedQuantity));
+            OrderLineTotals.Apply(order);
             CompleteOrderResponse response = OrderMapper.ToCompleteResponse(order);
             ApplyChannelDisplayName(response.Header, displayNames);
             results.Add(response);
@@ -152,7 +149,7 @@ public sealed class OrderService : IOrderService
         string[] situations = NormalizeSituations(situationCode);
         string[] sources = NormalizeSources(sourceSystem);
         var counts = await _repository.GetChannelCountsAsync(
-            NormalizeValues(search), situations, dateFrom, dateTo, sources, cancellationToken);
+            TextHelper.SplitValues(search), situations, dateFrom, dateTo, sources, cancellationToken);
         return counts
             .Select(item => new OrderChannelCountResponse
             { ChannelCode = item.ChannelCode, ChannelName = item.ChannelName, Count = item.Count })
@@ -188,7 +185,7 @@ public sealed class OrderService : IOrderService
 
     private static string[] NormalizeSituations(IEnumerable<string>? values)
     {
-        string[] situations = NormalizeValues(values).Select(value => value.ToUpperInvariant()).ToArray();
+        string[] situations = TextHelper.SplitValues(values).Select(value => value.ToUpperInvariant()).ToArray();
         if (situations.Any(value => value.Length > 20))
             throw new AppException("Cada situationCode debe tener como máximo 20 caracteres.");
         return situations;
@@ -196,18 +193,13 @@ public sealed class OrderService : IOrderService
 
     private static string[] NormalizeSources(IEnumerable<string>? values)
     {
-        string[] sources = NormalizeValues(values).Select(value => value.ToUpperInvariant()).ToArray();
+        string[] sources = TextHelper.SplitValues(values).Select(value => value.ToUpperInvariant()).ToArray();
         if (sources.Any(source => !SourceSystems.All.Contains(source)))
             throw new AppException("Uno o más sistemas de origen no son válidos.");
         return sources;
     }
 
     // Acepta ?campo=A&campo=B y también ?campo=A,B sin duplicar valores.
-    private static string[] NormalizeValues(IEnumerable<string>? values) => values?
-        .SelectMany(value => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        .Where(value => !string.IsNullOrWhiteSpace(value))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToArray() ?? Array.Empty<string>();
     private static PaginatedResponse<TOut> MapPage<TIn, TOut>(PaginatedResponse<TIn> page, Func<TIn, TOut> map) => new()
     {
         Items = page.Items.Select(map).ToList(), PageNumber = page.PageNumber, PageSize = page.PageSize,

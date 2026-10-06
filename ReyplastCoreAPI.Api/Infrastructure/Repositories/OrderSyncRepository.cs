@@ -1,4 +1,4 @@
-using EFCore.BulkExtensions;
+﻿using EFCore.BulkExtensions;
 using Microsoft.EntityFrameworkCore;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
@@ -33,7 +33,7 @@ public sealed class OrderSyncRepository : IOrderSyncRepository
         IReadOnlyCollection<SalesOrder> ordersToUpdate, IReadOnlyCollection<SalesOrder> ordersToTouch,
         IReadOnlyCollection<SalesOrderDetail> detailsToInsert, IReadOnlyCollection<SalesOrderDetail> detailsToUpdate,
         IReadOnlyCollection<SalesOrderDetail> detailsToTouch,
-        IReadOnlyCollection<SalesOrderDetailQuantityHistory> quantityHistory, SyncExecution execution,
+        SyncExecution execution,
         OrderPersistMode mode, CancellationToken cancellationToken)
     {
         if (mode == OrderPersistMode.SingleDocument)
@@ -46,7 +46,6 @@ public sealed class OrderSyncRepository : IOrderSyncRepository
                 tracker.MarkAll(detailsToInsert, EntityState.Added);
                 tracker.MarkAll(detailsToUpdate, EntityState.Modified);
                 tracker.MarkColumns(detailsToTouch, TouchOnlyDetailColumns);
-                tracker.MarkAll(quantityHistory, EntityState.Added);
             }, cancellationToken);
             return;
         }
@@ -66,8 +65,6 @@ public sealed class OrderSyncRepository : IOrderSyncRepository
         if (detailsToTouch.Count > 0)
             await _context.BulkUpdateAsync(detailsToTouch.ToList(),
                 new BulkConfig { PropertiesToInclude = TouchOnlyDetailColumns.ToList() }, cancellationToken: cancellationToken);
-        if (quantityHistory.Count > 0)
-            await _context.BulkInsertAsync(quantityHistory.ToList(), cancellationToken: cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 

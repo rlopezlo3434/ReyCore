@@ -1,9 +1,10 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
 using ReyplastCoreAPI.Application.Interfaces.Integrations;
 using ReyplastCoreAPI.Infrastructure.Integrations.Osis.Persistence;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Infrastructure.Integrations.Osis;
 
@@ -26,12 +27,13 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         string? cursor, CancellationToken cancellationToken = default)
     {
         DateTime from = dateFrom.Date;
-        DateTime exclusiveDateTo = dateTo.Date.AddDays(1);
+        DateTime exclusiveDateTo = DateHelper.EndExclusive(dateTo);
         IQueryable<OsisOrderEntity> source = _context.Orders.AsNoTracking()
             .Where(order => order.CompanyCode == OsisCatalogCodes.ReyplastCompany
                 && order.CreatedAt >= from
                 && order.CreatedAt < exclusiveDateTo);
-        return await ReadPageAsync(source, cursor, cancellationToken);
+        // Filtro de fechas (Gestión de Pickers): cabecera + resumen de líneas/unidades.
+        return await ReadPageAsync(source, cursor, includeLineSummary: true, cancellationToken);
     }
 
     public async Task<OsisOrderPage> ReadApprovedDayPageAsync(DateTime date, string? cursor,
@@ -39,10 +41,10 @@ internal sealed class OsisOrderReader : IOsisOrderReader
     {
         string approved = _options.ApprovedSituationCode;
         // Timeout propio (por defecto 300 s): el DbContext es del scope del job, así que solo afecta a esta
-        // sincronización (cabeceras y líneas), no a las demás consultas a OSIS.
+        // sincronización de cabeceras, no a las demás consultas a OSIS.
         _context.Database.SetCommandTimeout(TimeSpan.FromSeconds(Math.Max(_options.ApprovedDayCommandTimeoutSeconds, 30)));
         DateTime from = date.Date;
-        DateTime exclusiveTo = from.AddDays(1);
+        DateTime exclusiveTo = DateHelper.EndExclusive(from);
         // Aprobados ESE día por fecha de aprobación (PPC_FECAPR), no por fecha de creación: un pedido creado
         // ayer y aprobado hoy también entra. El límite de creación solo acota la búsqueda en OSIS (usa la
         // fecha de creación, igual que el sync por rango); no amplía lo que se sincroniza.
@@ -54,11 +56,17 @@ internal sealed class OsisOrderReader : IOsisOrderReader
                 && order.ApprovalDate >= from
                 && order.ApprovalDate < exclusiveTo
                 && order.StatusCode == approved);
-        return await ReadPageAsync(source, cursor, cancellationToken);
+        // Horaria: SOLO cabecera, sin ninguna consulta a PPD (el resumen se llena por filtro de fechas o
+        // al entrar al detalle).
+        return await ReadPageAsync(source, cursor, includeLineSummary: false, cancellationToken);
     }
 
+    // Las sincronizaciones masivas leen cabeceras PPC; el detalle PPD es la consulta pesada y Gestión de
+    // Pickers lo trae bajo demanda por documento (ReadByDocNumAsync) al abrir el pedido. Con
+    // includeLineSummary (filtro de fechas) se agrega el resumen de líneas/unidades por pedido. Las
+    // páginas salen siempre con Details vacío.
     private async Task<OsisOrderPage> ReadPageAsync(IQueryable<OsisOrderEntity> source,
-        string? cursor, CancellationToken cancellationToken)
+        string? cursor, bool includeLineSummary, CancellationToken cancellationToken)
     {
         (string? afterDocNum, string? afterBranch) = ParseCursor(cursor);
         if (afterDocNum is not null)
@@ -76,7 +84,7 @@ internal sealed class OsisOrderReader : IOsisOrderReader
 
         bool hasMore = orders.Count > _options.OrderPageSize;
         if (hasMore) orders.RemoveAt(orders.Count - 1);
-        if (orders.Count > 0) await LoadDetailsAsync(orders, cursor, cancellationToken);
+        if (includeLineSummary && orders.Count > 0) await LoadLineSummaryAsync(orders, cursor, cancellationToken);
 
         OsisOrderRecord? last = orders.LastOrDefault();
         return new OsisOrderPage
@@ -87,7 +95,8 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         };
     }
 
-    /// <summary>Busca exclusivamente un PPC y sus PPD para la carga bajo demanda.</summary>
+    /// <summary>Busca exclusivamente un PPC y TODAS sus líneas PPD para la carga bajo demanda (único camino
+    /// que trae el detalle).</summary>
     public async Task<IReadOnlyList<OsisOrderRecord>> ReadByDocNumAsync(
         string docNum,
         CancellationToken cancellationToken = default)
@@ -99,7 +108,66 @@ internal sealed class OsisOrderReader : IOsisOrderReader
             .OrderBy(order => order.BranchCode)
             .ToListAsync(cancellationToken);
         if (orders.Count > 0) await LoadDetailsAsync(orders, $"doc:{docNum}", cancellationToken);
+        // Resumen desde las mismas líneas leídas: detalle y resumen quedan siempre congruentes.
+        foreach (OsisOrderRecord order in orders) OsisLineSummary.ApplyFromDetails(order);
         return orders;
+    }
+
+    // Resumen de PPD para la sincronización masiva: UNA fila por pedido (líneas activas y unidades
+    // disponibles) con una consulta agrupada -- sin traer cada línea ni cruzar con productos, que es lo
+    // pesado del detalle. Así el listado de Gestión de Pickers muestra líneas y unidades sin abrir el pedido.
+    // Misma regla que OsisLineSummary.ApplyFromDetails: solo líneas activas; unidades = cantidad - suspendida
+    // (suspendida nula = 0), nunca negativa por línea.
+    internal IQueryable<OsisLineSummaryRow> LineSummaryQuery(string branchCode, string[] docNums)
+    {
+        string active = _options.ActiveStatusCode;
+        return _context.OrderDetails.AsNoTracking()
+            .Where(detail => detail.CompanyCode == OsisCatalogCodes.ReyplastCompany
+                && detail.BranchCode == branchCode
+                && docNums.Contains(detail.DocNum)
+                && detail.ActiveCode == active)
+            .GroupBy(detail => detail.DocNum)
+            .Select(group => new OsisLineSummaryRow
+            {
+                DocNum = group.Key,
+                Lines = group.Count(),
+                Units = group.Sum(detail => detail.Quantity - (detail.SuspendedQuantity ?? 0m) > 0m
+                    ? detail.Quantity - (detail.SuspendedQuantity ?? 0m) : 0m)
+            });
+    }
+
+    private async Task LoadLineSummaryAsync(List<OsisOrderRecord> orders, string? cursor, CancellationToken cancellationToken)
+    {
+        Dictionary<string, (int Lines, decimal Units)> summary = new(StringComparer.OrdinalIgnoreCase);
+        foreach (IGrouping<string, OsisOrderRecord> branch in orders.GroupBy(order => order.BranchCode, StringComparer.OrdinalIgnoreCase))
+        {
+            string[] branchDocNums = branch.Select(order => order.DocNum).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            foreach (string[] docNumBatch in branchDocNums.Chunk(_options.OrderDetailBatchSize))
+            {
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                List<OsisLineSummaryRow> rows = await LineSummaryQuery(branch.Key, docNumBatch).ToListAsync(cancellationToken);
+                foreach (OsisLineSummaryRow row in rows)
+                    summary[OrderSourceKey.Build(branch.Key, row.DocNum.Trim())] = (row.Lines, row.Units);
+                _logger.LogInformation(
+                    "Resumen de líneas OSIS. Sucursal {BranchCode}; documentos {DocumentCount}; cursor {Cursor}; duración {ElapsedMilliseconds} ms.",
+                    branch.Key, docNumBatch.Length, cursor ?? "inicio", stopwatch.ElapsedMilliseconds);
+            }
+        }
+        foreach (OsisOrderRecord order in orders)
+        {
+            // Sin líneas activas en OSIS: 0 y 0 (no null), para que quede registrado.
+            (int Lines, decimal Units) value = summary.TryGetValue(OrderSourceKey.Build(order.BranchCode, order.DocNum), out (int, decimal) found)
+                ? found : (0, 0m);
+            order.LineCount = value.Lines;
+            order.TotalUnits = value.Units;
+        }
+    }
+
+    internal sealed class OsisLineSummaryRow
+    {
+        public string DocNum { get; set; } = string.Empty;
+        public int Lines { get; set; }
+        public decimal Units { get; set; }
     }
 
     private IQueryable<OsisOrderRecord> ProjectHeaders(IQueryable<OsisOrderEntity> source) =>
@@ -143,7 +211,7 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         CancellationToken cancellationToken)
     {
         HashSet<string> pageKeys = orders
-            .Select(order => BuildOrderKey(order.BranchCode, order.DocNum))
+            .Select(order => OrderSourceKey.Build(order.BranchCode, order.DocNum))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         List<OsisOrderDetailRecord> details = [];
 
@@ -214,8 +282,8 @@ internal sealed class OsisOrderReader : IOsisOrderReader
         }
 
         Dictionary<string, IReadOnlyList<OsisOrderDetailRecord>> byOrder = details
-            .Where(detail => pageKeys.Contains(BuildOrderKey(detail.BranchCode, detail.DocNum)))
-            .GroupBy(detail => BuildOrderKey(detail.BranchCode, detail.DocNum), StringComparer.OrdinalIgnoreCase)
+            .Where(detail => pageKeys.Contains(OrderSourceKey.Build(detail.BranchCode, detail.DocNum)))
+            .GroupBy(detail => OrderSourceKey.Build(detail.BranchCode, detail.DocNum), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyList<OsisOrderDetailRecord>)group
@@ -224,12 +292,11 @@ internal sealed class OsisOrderReader : IOsisOrderReader
                     .ToList(),
                 StringComparer.OrdinalIgnoreCase);
         foreach (OsisOrderRecord order in orders)
-            order.Details = byOrder.TryGetValue(BuildOrderKey(order.BranchCode, order.DocNum), out var list)
+            order.Details = byOrder.TryGetValue(OrderSourceKey.Build(order.BranchCode, order.DocNum), out var list)
                 ? list : Array.Empty<OsisOrderDetailRecord>();
     }
 
     private static string BuildCursor(string docNum, string branchCode) => $"{docNum}|{branchCode}";
-    private static string BuildOrderKey(string branchCode, string docNum) => $"{branchCode}|{docNum}";
 
     private static (string? DocNum, string? Branch) ParseCursor(string? cursor)
     {

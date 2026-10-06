@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Hangfire;
 using Hangfire.SqlServer;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
@@ -67,7 +67,6 @@ public static class DependencyInjection
         });
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddScoped<IProductSyncRepository, ProductSyncRepository>();
-        services.AddScoped<ISyncExecutionRepository, SyncExecutionRepository>();
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IOrderSyncRepository, OrderSyncRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();

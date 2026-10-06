@@ -1,5 +1,6 @@
-using Hangfire;
+﻿using Hangfire;
 using Hangfire.Storage;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
@@ -59,7 +60,7 @@ public static class OsisApprovedOrdersSchedule
             if (string.IsNullOrWhiteSpace(id)) continue;
             if (TimeZoneInfo.TryFindSystemTimeZoneById(id, out TimeZoneInfo? zone)) return zone;
         }
-        return TimeZoneInfo.CreateCustomTimeZone("Peru", TimeSpan.FromHours(-5), "Perú (UTC-5)", "Perú (UTC-5)");
+        return DateHelper.PeruTimeZoneFallback();
     }
 
     private static string FirstLine(string value)

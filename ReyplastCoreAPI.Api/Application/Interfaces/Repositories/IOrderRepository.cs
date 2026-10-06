@@ -26,7 +26,12 @@ public interface IOrderRepository
         string? sourceSystem, CancellationToken cancellationToken);
     Task<PaginatedResponse<SalesOrderDetail>> GetDetailsAsync(Guid orderId, int pageNumber, int pageSize,
         CancellationToken cancellationToken);
-    Task<List<SalesOrder>> GetByKeysAsync(IReadOnlyCollection<string> keys, CancellationToken cancellationToken);
+    // includeDetails = false para la sincronización masiva (solo cabeceras).
+    Task<List<SalesOrder>> GetByKeysAsync(IReadOnlyCollection<string> keys, bool includeDetails,
+        CancellationToken cancellationToken);
+    // Líneas y unidades a mostrar por pedido (regla única en Domain.Orders.OrderLineTotals).
+    Task<Dictionary<Guid, ReyplastCoreAPI.Domain.Orders.OrderLineTotalsRow>> GetLineTotalsAsync(
+        IReadOnlyCollection<Guid> orderIds, CancellationToken cancellationToken);
     Task<List<SalesOrder>> GetBySourceDocumentIdsAsync(string sourceSystem,
         IReadOnlyCollection<string> sourceDocumentIds, CancellationToken cancellationToken);
 

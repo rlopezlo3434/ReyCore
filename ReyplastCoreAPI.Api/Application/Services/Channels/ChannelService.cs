@@ -6,6 +6,7 @@ using ReyplastCoreAPI.Application.Interfaces.Services;
 using ReyplastCoreAPI.Domain.Catalog;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
 using ReyplastCoreAPI.Shared.Mappers;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Channels;
 
@@ -13,16 +14,13 @@ namespace ReyplastCoreAPI.Application.Services.Channels;
 public sealed class ChannelService : IChannelService
 {
     private readonly IChannelRepository _channelRepository;
-    private readonly ISyncExecutionRepository _executions;
     private readonly IOsisChannelReader _osisReader;
 
     public ChannelService(
         IChannelRepository channelRepository,
-        ISyncExecutionRepository executions,
         IOsisChannelReader osisReader)
     {
         _channelRepository = channelRepository;
-        _executions = executions;
         _osisReader = osisReader;
     }
 
@@ -44,78 +42,54 @@ public sealed class ChannelService : IChannelService
 
     public async Task<ChannelSyncResponse> SyncFromOsisAsync(CancellationToken cancellationToken = default)
     {
-        DateTime now = CurrentTime();
-        SyncExecution execution = new()
+        DateTime now = DateHelper.PeruNow();
+        // Se graba como SyncExecutionId para saber qué canales vio esta ejecución (los demás se apagan).
+        Guid executionId = Guid.NewGuid();
+        ChannelSyncResponse response = new() { ExecutionId = executionId, Status = SyncStatuses.Running };
+        IReadOnlyList<OsisChannelRecord> source = await _osisReader.ReadAllAsync(cancellationToken);
+        if (source.Count == 0)
+            throw new Shared.Exceptions.AppException("OSIS no devolvió ningún canal.");
+
+        List<Channel> existing = await _channelRepository.GetByCodesAsync(
+            source.Select(record => record.ChannelCode).ToArray(), SourceSystems.Osis, cancellationToken);
+        Dictionary<string, Channel> existingByCode = existing
+            .ToDictionary(channel => channel.Code, StringComparer.OrdinalIgnoreCase);
+        List<Channel> toInsert = new();
+
+        foreach (OsisChannelRecord record in source)
         {
-            Id = Guid.NewGuid(),
-            SourceSystem = SourceSystems.Osis,
-            ResourceType = SyncResourceTypes.Channels,
-            StartedAt = now,
-            Status = SyncStatuses.Queued
-        };
-        await _executions.CreateAsync(execution, cancellationToken);
-        await _executions.MarkRunningAsync(execution.Id, now, cancellationToken);
+            bool isNew = !existingByCode.TryGetValue(record.ChannelCode, out Channel? channel);
+            channel ??= new Channel { Id = Guid.NewGuid(), Code = record.ChannelCode, CreatedAt = now };
+            bool changed = isNew || HasChanged(channel, record);
 
-        ChannelSyncResponse response = new() { ExecutionId = execution.Id, Status = SyncStatuses.Running };
-        try
-        {
-            IReadOnlyList<OsisChannelRecord> source = await _osisReader.ReadAllAsync(cancellationToken);
-            if (source.Count == 0)
-                throw new Shared.Exceptions.AppException("OSIS no devolvió ningún canal.");
+            channel.Name = record.ChannelName;
+            channel.SourceSystem = SourceSystems.Osis;
+            channel.IsActive = true;
+            channel.SyncExecutionId = executionId;
+            channel.LastSynchronizedAt = now;
 
-            List<Channel> existing = await _channelRepository.GetByCodesAsync(
-                source.Select(record => record.ChannelCode).ToArray(), SourceSystems.Osis, cancellationToken);
-            Dictionary<string, Channel> existingByCode = existing
-                .ToDictionary(channel => channel.Code, StringComparer.OrdinalIgnoreCase);
-            List<Channel> toInsert = new();
-
-            foreach (OsisChannelRecord record in source)
-            {
-                bool isNew = !existingByCode.TryGetValue(record.ChannelCode, out Channel? channel);
-                channel ??= new Channel { Id = Guid.NewGuid(), Code = record.ChannelCode, CreatedAt = now };
-                bool changed = isNew || HasChanged(channel, record);
-
-                channel.Name = record.ChannelName;
-                channel.SourceSystem = SourceSystems.Osis;
-                channel.IsActive = true;
-                channel.SyncExecutionId = execution.Id;
-                channel.LastSynchronizedAt = now;
-
-                if (isNew) { toInsert.Add(channel); response.ChannelsCreated++; }
-                else if (changed) { channel.ModifiedAt = now; response.ChannelsChanged++; }
-                else response.ChannelsUnchanged++;
-            }
-
-            if (toInsert.Count > 0) _channelRepository.AddRange(toInsert);
-
-            // Un canal que ya no aparece en OSIS (por ejemplo, se dejó de usar) se apaga en vez
-            // de borrarse -- otras tablas (Orders) pueden seguir referenciándolo por código.
-            List<Channel> missing = await _channelRepository.GetActiveMissingFromExecutionAsync(
-                execution.Id, SourceSystems.Osis, cancellationToken);
-            foreach (Channel channel in missing)
-            {
-                channel.IsActive = false;
-                channel.LastSynchronizedAt = now;
-                channel.ModifiedAt = now;
-                response.ChannelsDeactivated++;
-            }
-
-            execution.RecordsRead = source.Count;
-            execution.RecordsCreated = response.ChannelsCreated;
-            execution.RecordsChanged = response.ChannelsChanged;
-            execution.RecordsUnchanged = response.ChannelsUnchanged;
-            execution.Status = SyncStatuses.Completed;
-            execution.CompletedAt = CurrentTime();
-
-            await _channelRepository.SaveChangesAsync(cancellationToken);
-            response.Status = SyncStatuses.Completed;
-            return response;
+            if (isNew) { toInsert.Add(channel); response.ChannelsCreated++; }
+            else if (changed) { channel.ModifiedAt = now; response.ChannelsChanged++; }
+            else response.ChannelsUnchanged++;
         }
-        catch (Exception exception)
+
+        if (toInsert.Count > 0) _channelRepository.AddRange(toInsert);
+
+        // Un canal que ya no aparece en OSIS (por ejemplo, se dejó de usar) se apaga en vez
+        // de borrarse -- otras tablas (Orders) pueden seguir referenciándolo por código.
+        List<Channel> missing = await _channelRepository.GetActiveMissingFromExecutionAsync(
+            executionId, SourceSystems.Osis, cancellationToken);
+        foreach (Channel channel in missing)
         {
-            await _executions.MarkFailedAsync(execution.Id, exception.Message, CancellationToken.None);
-            throw;
+            channel.IsActive = false;
+            channel.LastSynchronizedAt = now;
+            channel.ModifiedAt = now;
+            response.ChannelsDeactivated++;
         }
+
+        await _channelRepository.SaveChangesAsync(cancellationToken);
+        response.Status = SyncStatuses.Completed;
+        return response;
     }
 
     private static bool HasChanged(Channel channel, OsisChannelRecord source) =>
@@ -138,7 +112,7 @@ public sealed class ChannelService : IChannelService
         if (string.IsNullOrWhiteSpace(name))
             throw new Shared.Exceptions.AppException("El nombre del grupo es obligatorio.");
 
-        ChannelGroup group = new() { Id = Guid.NewGuid(), Name = name, CreatedAt = CurrentTime() };
+        ChannelGroup group = new() { Id = Guid.NewGuid(), Name = name, CreatedAt = DateHelper.PeruNow() };
         _channelRepository.AddGroup(group);
         try
         {
@@ -176,6 +150,4 @@ public sealed class ChannelService : IChannelService
 
     private static bool IsUniqueConstraintViolation(Exception exception) =>
         exception.InnerException?.Message.Contains("UX_ChannelGroups_Name", StringComparison.OrdinalIgnoreCase) == true;
-
-    private static DateTime CurrentTime() => DateTime.UtcNow.AddHours(-5);
 }

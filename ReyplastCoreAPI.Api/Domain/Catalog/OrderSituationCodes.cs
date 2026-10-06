@@ -1,6 +1,6 @@
 namespace ReyplastCoreAPI.Domain.Catalog;
 
-/// <summary>Códigos de situación de pedido (catálogo orders.OrderSituations) que tienen un significado
+/// <summary>Códigos de situación de pedido (catálogo dbo.OrderSituations) que tienen un significado
 /// de negocio fijo.</summary>
 public static class OrderSituationCodes
 {

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Extensions.Options;
 using ReyplastCoreAPI.Application.DTOs.Integrations.Sap;
 using ReyplastCoreAPI.Application.DTOs.Order;
@@ -9,6 +9,7 @@ using ReyplastCoreAPI.Domain.Catalog;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
 using ReyplastCoreAPI.Domain.Orders.Entities;
 using ReyplastCoreAPI.Shared.Exceptions;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
@@ -18,21 +19,19 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
     private readonly ISapOrderReader _reader;
     private readonly IOrderRepository _orders;
     private readonly IOrderSyncRepository _orderSync;
-    private readonly ISyncExecutionRepository _executions;
     private readonly IOrderSyncQueue _queue;
     private readonly OrderSynchronizationLock _synchronizationLock;
     private readonly OrderOnDemandSyncLock _onDemandLock;
     private readonly int _databaseBatchSize;
 
     public SapOrderSyncService(ISapOrderReader reader, IOrderRepository orders,
-        IOrderSyncRepository orderSync, ISyncExecutionRepository executions,
+        IOrderSyncRepository orderSync,
         IOrderSyncQueue queue, OrderSynchronizationLock synchronizationLock, OrderOnDemandSyncLock onDemandLock,
         IOptions<SapOrderSyncOptions> options)
     {
         _reader = reader;
         _orders = orders;
         _orderSync = orderSync;
-        _executions = executions;
         _queue = queue;
         _synchronizationLock = synchronizationLock;
         _onDemandLock = onDemandLock;
@@ -44,86 +43,58 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
     {
         if (string.IsNullOrWhiteSpace(docNum)) throw new AppException("El número de pedido es obligatorio.");
         string normalizedDocNum = docNum.Trim();
-        SyncExecution execution = new()
+        SyncExecution execution = NewExecution(Guid.NewGuid());
+        execution.LastCursor = normalizedDocNum;
+        SapOrderRecord? record = await _reader.ReadByDocNumAsync(normalizedDocNum, cancellationToken);
+        execution.RecordsRead = record is null ? 0 : 1;
+        // OrderOnDemandSyncLock (por pedido), no el de Range -- ver comentario en la clase y en
+        // OsisOrderSyncService.SyncByDocNumAsync (mismo motivo).
+        OrderSyncChangeWindow changes = new();
+        using (await _onDemandLock.AcquireAsync(normalizedDocNum, cancellationToken))
         {
-            Id = Guid.NewGuid(),
-            SourceSystem = SourceSystems.Sap,
-            ResourceType = SyncResourceTypes.Orders,
-            StartedAt = Now(),
-            Status = SyncStatuses.Running,
-            LastCursor = normalizedDocNum
-        };
-        await _executions.CreateAsync(execution, cancellationToken);
-        try
-        {
-            SapOrderRecord? record = await _reader.ReadByDocNumAsync(normalizedDocNum, cancellationToken);
-            execution.RecordsRead = record is null ? 0 : 1;
-            // OrderOnDemandSyncLock (por pedido), no el de Range -- ver comentario en la clase y en
-            // OsisOrderSyncService.SyncByDocNumAsync (mismo motivo).
-            OrderSyncChangeWindow changes = new();
-            using (await _onDemandLock.AcquireAsync(normalizedDocNum, cancellationToken))
-            {
-                await PersistAsync(record is null ? Array.Empty<SapOrderRecord>() : new[] { record },
-                    execution, true, changes, OrderPersistMode.SingleDocument, cancellationToken);
-            }
-            return record is null
-                ? OrderDocumentSyncResult.NotFound
-                : OrderDocumentSyncResult.Synced(changed: changes.From is not null);
+            await PersistAsync(record is null ? Array.Empty<SapOrderRecord>() : new[] { record },
+                execution, true, changes, OrderPersistMode.SingleDocument, cancellationToken);
         }
-        catch (OperationCanceledException)
-        {
-            await _executions.MarkCancelledAsync(execution.Id,
-                "La sincronización puntual SAP fue cancelada.", CancellationToken.None);
-            throw;
-        }
-        catch (Exception exception)
-        {
-            try { await _executions.MarkFailedAsync(execution.Id, exception.Message, CancellationToken.None); }
-            catch { }
-            throw;
-        }
+        return record is null
+            ? OrderDocumentSyncResult.NotFound
+            : OrderDocumentSyncResult.Synced(changed: changes.From is not null);
     }
 
     public async Task<OrderSyncAcceptedResponse> QueueRangeAsync(DateTime dateFrom, DateTime dateTo,
         CancellationToken cancellationToken = default)
     {
-        DateTime from = ValidateDate(dateFrom, nameof(dateFrom));
-        DateTime to = ValidateDate(dateTo, nameof(dateTo));
+        DateTime from = DateHelper.RequiredDate(dateFrom, nameof(dateFrom));
+        DateTime to = DateHelper.RequiredDate(dateTo, nameof(dateTo));
         if (from > to) throw new AppException("dateFrom no puede ser mayor que dateTo.");
 
-        SyncExecution execution = new()
-        {
-            Id = Guid.NewGuid(),
-            SourceSystem = SourceSystems.Sap,
-            ResourceType = SyncResourceTypes.Orders,
-            StartedAt = Now(),
-            Status = SyncStatuses.Queued,
-            LastCursor = RangeCursor(from, to)
-        };
-        await _executions.CreateAsync(execution, cancellationToken);
-        string? jobId = await _queue.EnqueueSapRangeAsync(execution.Id, from, to, cancellationToken);
-        if (jobId is null)
-        {
-            await _executions.MarkFailedAsync(execution.Id,
-                "No fue posible agregar la ejecución SAP a la cola.", CancellationToken.None);
-            throw new AppException("No fue posible agregar la sincronización SAP a la cola.", 503);
-        }
-
-        return new OrderSyncAcceptedResponse { ExecutionId = execution.Id, Status = execution.Status, JobId = jobId };
+        // Si el mismo rango ya está en cola o corriendo, se devuelve ese job (no se encola otro).
+        OrderSyncEnqueueResult job = await _queue.EnqueueSapRangeAsync(from, to, cancellationToken)
+            ?? throw new AppException("No fue posible agregar la sincronización SAP a la cola.", 503);
+        return new OrderSyncAcceptedResponse { ExecutionId = job.ExecutionId, Status = job.Status, JobId = job.JobId };
     }
+
+    // Contadores de la ejecución en curso (no se persisten: Hangfire es el historial).
+    private static SyncExecution NewExecution(Guid executionId) => new()
+    {
+        Id = executionId,
+        SourceSystem = SourceSystems.Sap,
+        ResourceType = SyncResourceTypes.Orders,
+        StartedAt = DateHelper.PeruNow(),
+        Status = SyncStatuses.Running
+    };
 
     public async Task<OrdersSynchronizedEvent?> ExecuteRangeAsync(Guid executionId, DateTime dateFrom, DateTime dateTo,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            SyncExecution execution = await _executions.MarkRunningAsync(executionId, Now(), cancellationToken);
+            SyncExecution execution = NewExecution(executionId);
             OrderSyncChangeWindow changes = new();
             IReadOnlyList<SapOrderRecord> records = await _reader.ReadRangeAsync(
                 dateFrom.Date, dateTo.Date, cancellationToken);
             EnsureUniqueDocuments(records);
             execution.RecordsRead = records.Count;
-            execution.LastCursor = RangeCursor(dateFrom, dateTo);
+            execution.LastCursor = DateHelper.RangeKey(dateFrom, dateTo);
 
             await _synchronizationLock.Gate.WaitAsync(cancellationToken);
             try
@@ -148,15 +119,8 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
         }
         catch (OperationCanceledException)
         {
-            await _executions.MarkCancelledAsync(executionId,
-                "La sincronización SAP fue cancelada.", CancellationToken.None);
+            // Cancelada (apagado del API): Hangfire la deja registrada; sin aviso a MasterLogic.
             return null;
-        }
-        catch (Exception exception)
-        {
-            try { await _executions.MarkFailedAsync(executionId, exception.Message, CancellationToken.None); }
-            catch { }
-            throw;
         }
     }
 
@@ -175,7 +139,7 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
         List<SalesOrderDetail> deleteDetails = new();
         List<SalesOrderDetail> insertDetails = new();
         List<SalesOrderDetail> updateDetails = new();
-        DateTime synchronizedAt = Now();
+        DateTime synchronizedAt = DateHelper.PeruNow();
 
         foreach (SapOrderRecord record in source)
         {
@@ -223,7 +187,7 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
         if (isLastBatch)
         {
             execution.Status = SyncStatuses.Completed;
-            execution.CompletedAt = Now();
+            execution.CompletedAt = DateHelper.PeruNow();
         }
         await _orderSync.PersistSapBatchAsync(insertOrders, updateOrders, deleteDetails,
             insertDetails, updateDetails, execution, mode, cancellationToken);
@@ -301,10 +265,4 @@ public sealed class SapOrderSyncService : ISapOrderSyncService
             throw new InvalidDataException($"SAP devolvió DocEntry duplicado: {duplicate}.");
     }
 
-    private static DateTime ValidateDate(DateTime value, string name) => value == default
-        ? throw new AppException($"{name} es obligatorio.")
-        : value.Date;
-    private static string RangeCursor(DateTime from, DateTime to) =>
-        $"{from:yyyy-MM-dd}|{to:yyyy-MM-dd}";
-    private static DateTime Now() => DateTime.UtcNow.AddHours(-5);
 }

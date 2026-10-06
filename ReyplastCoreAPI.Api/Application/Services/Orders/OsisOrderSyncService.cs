@@ -1,4 +1,4 @@
-using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
+﻿using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
 using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.Interfaces.Integrations;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
@@ -9,6 +9,7 @@ using ReyplastCoreAPI.Domain.Orders.Entities;
 using ReyplastCoreAPI.Shared.Exceptions;
 using ReyplastCoreAPI.Shared.Mappers;
 using Microsoft.Extensions.Options;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
@@ -22,15 +23,13 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
     private readonly OrderOnDemandSyncLock _onDemandLock;
     private readonly IOrderRepository _orders;
     private readonly IOrderSyncRepository _orderSync;
-    private readonly ISyncExecutionRepository _executions;
     private readonly IOsisOrderReader _reader;
     private readonly IOrderSyncQueue _queue;
 
-    public OsisOrderSyncService(IOrderRepository orders, IOrderSyncRepository orderSync,
-        ISyncExecutionRepository executions, IOsisOrderReader reader,
+    public OsisOrderSyncService(IOrderRepository orders, IOrderSyncRepository orderSync, IOsisOrderReader reader,
         IOrderSyncQueue queue, OrderSynchronizationLock synchronizationLock, OrderOnDemandSyncLock onDemandLock)
     {
-        _orders = orders; _orderSync = orderSync; _executions = executions;
+        _orders = orders; _orderSync = orderSync;
         _reader = reader; _queue = queue;
         _synchronizationLock = synchronizationLock;
         _onDemandLock = onDemandLock;
@@ -39,24 +38,13 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
     public async Task<OrderSyncAcceptedResponse> QueueRangeAsync(DateTime dateFrom, DateTime dateTo,
         CancellationToken cancellationToken = default)
     {
-        DateTime from = ValidateDate(dateFrom, nameof(dateFrom));
-        DateTime to = ValidateDate(dateTo, nameof(dateTo));
+        DateTime from = DateHelper.RequiredDate(dateFrom, nameof(dateFrom));
+        DateTime to = DateHelper.RequiredDate(dateTo, nameof(dateTo));
         if (from > to) throw new AppException("dateFrom no puede ser mayor que dateTo.");
-        SyncExecution execution = new()
-        {
-            Id = Guid.NewGuid(), SourceSystem = SourceSystems.Osis,
-            ResourceType = SyncResourceTypes.Orders, StartedAt = Now(),
-            Status = SyncStatuses.Queued, LastCursor = RangeProgress(from, to, null)
-        };
-        await _executions.CreateAsync(execution, cancellationToken);
-        string? jobId = await _queue.EnqueueOsisRangeAsync(execution.Id, from, to, cancellationToken);
-        if (jobId is null)
-        {
-            await _executions.MarkFailedAsync(execution.Id,
-                "No fue posible agregar la ejecución OSIS por rango a la cola.", CancellationToken.None);
-            throw new AppException("No fue posible agregar la sincronización OSIS a la cola.", 503);
-        }
-        return new OrderSyncAcceptedResponse { ExecutionId = execution.Id, Status = execution.Status, JobId = jobId };
+        // Si el mismo rango ya está en cola o corriendo, se devuelve ese job (no se encola otro).
+        OrderSyncEnqueueResult job = await _queue.EnqueueOsisRangeAsync(from, to, cancellationToken)
+            ?? throw new AppException("No fue posible agregar la sincronización OSIS a la cola.", 503);
+        return new OrderSyncAcceptedResponse { ExecutionId = job.ExecutionId, Status = job.Status, JobId = job.JobId };
     }
 
     /// <summary>
@@ -78,48 +66,36 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
                 throw new AppException(
                     "El número de pedido existe en más de una sucursal OSIS y no es único.", 409);
 
-            DateTime startedAt = Now();
-            SyncExecution execution = new()
-            {
-                Id = Guid.NewGuid(),
-                SourceSystem = SourceSystems.Osis,
-                ResourceType = SyncResourceTypes.Orders,
-                StartedAt = startedAt,
-                Status = SyncStatuses.Running
-            };
-            await _executions.CreateAsync(execution, cancellationToken);
-            try
-            {
-                execution.RecordsRead = source.Count;
-                execution.LastCursor = $"{source[0].DocNum}|{source[0].BranchCode}";
-                execution.Status = SyncStatuses.Completed;
-                execution.CompletedAt = Now();
-                OrderSyncChangeWindow changes = new();
-                await PersistPageAsync(new OsisOrderPage { Orders = source }, execution, changes,
-                    OrderPersistMode.SingleDocument, cancellationToken);
-                return OrderDocumentSyncResult.Synced(changed: changes.From is not null);
-            }
-            catch (OperationCanceledException)
-            {
-                await _executions.MarkCancelledAsync(
-                    execution.Id, "La sincronización bajo demanda fue cancelada.", CancellationToken.None);
-                throw;
-            }
-            catch (Exception exception)
-            {
-                try { await _executions.MarkFailedAsync(execution.Id, exception.Message, CancellationToken.None); }
-                catch { }
-                throw;
-            }
+            SyncExecution execution = NewExecution(Guid.NewGuid());
+            execution.RecordsRead = source.Count;
+            execution.LastCursor = $"{source[0].DocNum}|{source[0].BranchCode}";
+            execution.Status = SyncStatuses.Completed;
+            execution.CompletedAt = DateHelper.PeruNow();
+            OrderSyncChangeWindow changes = new();
+            // Único camino que trae y guarda el detalle: cabecera + TODAS las líneas del documento
+            // (si el pedido no estaba en Core, se inserta completo).
+            await PersistPageAsync(new OsisOrderPage { Orders = source }, execution, changes,
+                OrderPersistMode.SingleDocument, includeDetails: true, cancellationToken);
+            return OrderDocumentSyncResult.Synced(changed: changes.From is not null);
         }
     }
+
+    // Contadores de la ejecución en curso (no se persisten: Hangfire es el historial). Su Id se graba como
+    // SyncExecutionId en las filas que toca.
+    private static SyncExecution NewExecution(Guid executionId) => new()
+    {
+        Id = executionId,
+        SourceSystem = SourceSystems.Osis,
+        ResourceType = SyncResourceTypes.Orders,
+        StartedAt = DateHelper.PeruNow(),
+        Status = SyncStatuses.Running
+    };
 
     public Task<OrdersSynchronizedEvent?> ExecuteRangeAsync(Guid executionId, DateTime dateFrom, DateTime dateTo,
         CancellationToken cancellationToken = default) =>
         ExecutePagedAsync(executionId, OrderSyncKinds.Range, dateFrom.Date, dateTo.Date,
             cursor => _reader.ReadRangePageAsync(dateFrom.Date, dateTo.Date, cursor, cancellationToken),
-            cursor => RangeProgress(dateFrom, dateTo, cursor),
-            "La sincronización OSIS por rango fue cancelada.", cancellationToken);
+            cursor => DateHelper.RangeProgress(dateFrom, dateTo, cursor), cancellationToken);
 
     public Task<OrdersSynchronizedEvent?> ExecuteApprovedDayAsync(Guid executionId, DateTime date,
         CancellationToken cancellationToken = default) =>
@@ -127,18 +103,17 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
             cursor => _reader.ReadApprovedDayPageAsync(date.Date, cursor, cancellationToken),
             cursor => string.IsNullOrWhiteSpace(cursor)
                 ? $"aprobados:{date:yyyy-MM-dd}"
-                : $"aprobados:{date:yyyy-MM-dd}@{cursor}",
-            "La sincronización horaria de pedidos aprobados fue cancelada.", cancellationToken);
+                : $"aprobados:{date:yyyy-MM-dd}@{cursor}", cancellationToken);
 
     // Recorre las páginas de OSIS y persiste cada una con la misma comparación (nuevo / cambiado / sin
     // cambios) para cualquier tipo de sincronización; solo cambia la consulta que arma cada página.
     private async Task<OrdersSynchronizedEvent?> ExecutePagedAsync(Guid executionId, string kind,
         DateTime eventDateFrom, DateTime eventDateTo, Func<string?, Task<OsisOrderPage>> readPage,
-        Func<string?, string> progress, string cancelledMessage, CancellationToken cancellationToken)
+        Func<string?, string> progress, CancellationToken cancellationToken)
     {
         try
         {
-            SyncExecution execution = await _executions.MarkRunningAsync(executionId, Now(), cancellationToken);
+            SyncExecution execution = NewExecution(executionId);
             OrderSyncChangeWindow changes = new();
             string? cursor = null;
             do
@@ -149,13 +124,17 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
                 if (!page.HasMore)
                 {
                     execution.Status = SyncStatuses.Completed;
-                    execution.CompletedAt = Now();
+                    execution.CompletedAt = DateHelper.PeruNow();
                 }
 
                 await _synchronizationLock.Gate.WaitAsync(cancellationToken);
                 try
                 {
-                    await PersistPageAsync(page, execution, changes, OrderPersistMode.Batch, cancellationToken);
+                    // Masivo: solo agrega o actualiza cabeceras (el rango además trae el resumen de líneas y
+                    // unidades, que vive en la cabecera). Las líneas solo se escriben por docNumber.
+                    if (page.Orders.Count > 0)
+                        await PersistPageAsync(page, execution, changes, OrderPersistMode.Batch,
+                            includeDetails: false, cancellationToken);
                 }
                 finally
                 {
@@ -170,22 +149,40 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
         }
         catch (OperationCanceledException)
         {
-            await _executions.MarkCancelledAsync(executionId, cancelledMessage, CancellationToken.None);
+            // Cancelada (apagado del API): Hangfire la deja registrada; sin aviso a MasterLogic.
             return null;
-        }
-        catch (Exception exception)
-        {
-            try { await _executions.MarkFailedAsync(executionId, exception.Message, CancellationToken.None); }
-            catch { }
-            throw;
         }
     }
 
+    // Siempre se evalúa contra lo que ya existe en Core antes de decidir insertar o actualizar. El refresco
+    // por docNumber y la sincronización masiva usan candados distintos, así que el otro puede insertar el
+    // mismo pedido entre la lectura y el guardado: el índice único lo rechaza, nada queda a medias (todo va
+    // en una transacción) y se vuelve a evaluar una vez -- lo que se iba a insertar pasa a actualización.
     private async Task PersistPageAsync(OsisOrderPage page, SyncExecution execution,
-        OrderSyncChangeWindow? changes, OrderPersistMode mode, CancellationToken cancellationToken)
+        OrderSyncChangeWindow? changes, OrderPersistMode mode, bool includeDetails, CancellationToken cancellationToken)
+    {
+        (int Created, int Changed, int Unchanged, int ChildCreated, int ChildChanged, int ChildUnchanged) counters =
+            (execution.RecordsCreated, execution.RecordsChanged, execution.RecordsUnchanged,
+             execution.ChildRecordsCreated, execution.ChildRecordsChanged, execution.ChildRecordsUnchanged);
+        try
+        {
+            await UpsertPageAsync(page, execution, changes, mode, includeDetails, cancellationToken);
+        }
+        catch (Exception exception) when (DatabaseErrorHelper.IsDuplicateKey(exception))
+        {
+            (execution.RecordsCreated, execution.RecordsChanged, execution.RecordsUnchanged,
+             execution.ChildRecordsCreated, execution.ChildRecordsChanged, execution.ChildRecordsUnchanged) = counters;
+            await UpsertPageAsync(page, execution, changes, mode, includeDetails, cancellationToken);
+        }
+    }
+
+    // includeDetails = false (sincronización masiva): solo se inserta/actualiza la cabecera; las líneas
+    // guardadas no se tocan ni se desactivan (la página llega sin detalle a propósito).
+    private async Task UpsertPageAsync(OsisOrderPage page, SyncExecution execution,
+        OrderSyncChangeWindow? changes, OrderPersistMode mode, bool includeDetails, CancellationToken cancellationToken)
     {
         string[] keys = page.Orders.Select(OsisOrderSyncMapper.BuildSourceKey).ToArray();
-        List<SalesOrder> existing = await _orders.GetByKeysAsync(keys, cancellationToken);
+        List<SalesOrder> existing = await _orders.GetByKeysAsync(keys, includeDetails, cancellationToken);
         Dictionary<string, SalesOrder> byKey = existing.ToDictionary(
             OsisOrderSyncMapper.BuildSourceKey, StringComparer.OrdinalIgnoreCase);
         List<SalesOrder> insertOrders = new();
@@ -200,8 +197,7 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
         List<SalesOrderDetail> insertDetails = new();
         List<SalesOrderDetail> updateDetails = new();
         List<SalesOrderDetail> touchDetails = new();
-        List<SalesOrderDetailQuantityHistory> quantityHistory = new();
-        DateTime synchronizedAt = Now();
+        DateTime synchronizedAt = DateHelper.PeruNow();
 
         foreach (OsisOrderRecord source in page.Orders)
         {
@@ -214,6 +210,11 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
             else { touchOrders.Add(order); execution.RecordsUnchanged++; }
             // Un pedido "touch" en cabecera igual cuenta como cambiado si alguna linea cambio.
             bool orderAffected = changed;
+            if (!includeDetails)
+            {
+                if (orderAffected) changes?.Include(order.DocDate);
+                continue;
+            }
 
             // La PK real de PPD termina en PRD_CODPRD: dentro de una cabecera OSIS,
             // ItemCode es único mientras que PPD_CORPPD puede repetirse.
@@ -225,27 +226,16 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
                 seenDetails.Add(sourceDetail.ItemCode);
                 bool detailIsNew = !details.TryGetValue(sourceDetail.ItemCode, out SalesOrderDetail? detail);
                 detail ??= new SalesOrderDetail { Id = Guid.NewGuid(), OrderId = order.Id, CreatedAt = synchronizedAt };
-                bool quantityChanged = detailIsNew || detail.Quantity != sourceDetail.Quantity
-                    || detail.SuspendedQuantity != sourceDetail.SuspendedQuantity;
                 bool detailChanged = detailIsNew || OsisOrderSyncMapper.HasDetailChanged(detail, sourceDetail);
                 OsisOrderSyncMapper.ApplyDetail(
                     detail, sourceDetail, execution.Id, synchronizedAt, detailIsNew, detailChanged);
                 if (detailIsNew) { insertDetails.Add(detail); execution.ChildRecordsCreated++; orderAffected = true; }
                 else if (detailChanged) { updateDetails.Add(detail); execution.ChildRecordsChanged++; orderAffected = true; }
                 else { touchDetails.Add(detail); execution.ChildRecordsUnchanged++; }
-                if (quantityChanged)
-                    quantityHistory.Add(new SalesOrderDetailQuantityHistory
-                    {
-                        OrderDetailId = detail.Id,
-                        RequestedQuantity = sourceDetail.Quantity,
-                        SuspendedQuantity = sourceDetail.SuspendedQuantity,
-                        AvailableQuantity = Math.Max(0, sourceDetail.Quantity - sourceDetail.SuspendedQuantity),
-                        ObservedAt = synchronizedAt,
-                        SyncExecutionId = execution.Id
-                    });
             }
 
-            // Una actualización puntual solo desactiva líneas ausentes de esta cabecera consultada.
+            // Una actualización puntual solo desactiva líneas ausentes de esta cabecera consultada (no se
+            // borran) y deja constancia en el historial.
             foreach (SalesOrderDetail missing in order.Details.Where(detail =>
                          detail.IsActive && !seenDetails.Contains(detail.SourceDetailId)))
             {
@@ -262,16 +252,7 @@ public sealed class OsisOrderSyncService : IOsisOrderSyncService
         }
 
         await _orderSync.PersistPageAsync(insertOrders, updateOrders, touchOrders, insertDetails, updateDetails,
-            touchDetails, quantityHistory, execution, mode, cancellationToken);
+            touchDetails, execution, mode, cancellationToken);
     }
-
-    private static DateTime Now() => DateTime.UtcNow.AddHours(-5);
-    private static DateTime ValidateDate(DateTime value, string name) => value == default
-        ? throw new AppException($"{name} es obligatorio.")
-        : value.Date;
-    private static string RangeProgress(DateTime from, DateTime to, string? cursor) =>
-        string.IsNullOrWhiteSpace(cursor)
-            ? $"{from:yyyy-MM-dd}|{to:yyyy-MM-dd}"
-            : $"{from:yyyy-MM-dd}|{to:yyyy-MM-dd}@{cursor}";
 
 }

@@ -1,4 +1,4 @@
-using ReyplastCoreAPI.Application.DTOs.Product.Request;
+﻿using ReyplastCoreAPI.Application.DTOs.Product.Request;
 using ReyplastCoreAPI.Application.DTOs.Product.Response;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
 using ReyplastCoreAPI.Application.Interfaces.Services;
@@ -48,7 +48,7 @@ public sealed class ProductService : IProductService
 
     public async Task<ProductResponse> GetByGenericCodeAsync(string genericCode)
     {
-        string normalizedCode = NormalizeRequired(genericCode, "El código del producto es obligatorio.");
+        string normalizedCode = TextHelper.Required(genericCode, "El código del producto es obligatorio.");
         Product? product = await _repository.GetByGenericCodeAsync(normalizedCode);
         if (product is null) throw new AppException("No se encontró el producto.", 404);
         return ProductMapper.ToResponse(product);
@@ -58,7 +58,7 @@ public sealed class ProductService : IProductService
     {
         ValidationHelper.ThrowIfNull(request, "La solicitud es obligatoria.");
         string type = NormalizeProductType(request.Type);
-        string genericCode = NormalizeRequired(request.GenericCode, "El código del producto es obligatorio.");
+        string genericCode = TextHelper.Required(request.GenericCode, "El código del producto es obligatorio.");
         ValidateDistinctColorCodes(request.Colors);
 
         if (await _repository.GenericCodeExistsAsync(genericCode))
@@ -69,7 +69,7 @@ public sealed class ProductService : IProductService
             Id = Guid.NewGuid(),
             Type = type,
             GenericCode = genericCode,
-            Description = NormalizeOptional(request.Description),
+            Description = TextHelper.TrimOrNull(request.Description),
             SourceSystem = SourceSystems.Manual,
             IsActive = true
         };
@@ -87,7 +87,7 @@ public sealed class ProductService : IProductService
         ValidationHelper.ThrowIfInvalidId(id, "El identificador del producto no es válido.");
         ValidationHelper.ThrowIfNull(request, "La solicitud es obligatoria.");
         string type = NormalizeProductType(request.Type);
-        string genericCode = NormalizeRequired(request.GenericCode, "El código del producto es obligatorio.");
+        string genericCode = TextHelper.Required(request.GenericCode, "El código del producto es obligatorio.");
         ValidateDistinctColorCodes(request.Colors);
 
         Product product = await GetRequiredByIdAsync(id, true);
@@ -97,7 +97,7 @@ public sealed class ProductService : IProductService
 
         product.Type = type;
         product.GenericCode = genericCode;
-        product.Description = NormalizeOptional(request.Description);
+        product.Description = TextHelper.TrimOrNull(request.Description);
         ApplyAdministrativeColors(product, request.Colors);
         await _repository.SaveChangesAsync();
         return ProductMapper.ToResponse(product);
@@ -129,8 +129,8 @@ public sealed class ProductService : IProductService
     {
         Id = Guid.NewGuid(),
         ProductId = productId,
-        Code = NormalizeRequired(request.Code, "El código de color es obligatorio."),
-        ColorDescription = NormalizeOptional(request.ColorDescription),
+        Code = TextHelper.Required(request.Code, "El código de color es obligatorio."),
+        ColorDescription = TextHelper.TrimOrNull(request.ColorDescription),
         IsSaleEnabled = request.IsSaleEnabled,
         IsActive = true
     };
@@ -140,7 +140,7 @@ public sealed class ProductService : IProductService
         HashSet<string> suppliedCodes = new(StringComparer.OrdinalIgnoreCase);
         foreach (ProductColorRequest request in requests)
         {
-            string code = NormalizeRequired(request.Code, "El código de color es obligatorio.");
+            string code = TextHelper.Required(request.Code, "El código de color es obligatorio.");
             suppliedCodes.Add(code);
             Color? color = product.Colors.FirstOrDefault(existing =>
                 string.Equals(existing.Code, code, StringComparison.OrdinalIgnoreCase));
@@ -150,7 +150,7 @@ public sealed class ProductService : IProductService
                 continue;
             }
 
-            color.ColorDescription = NormalizeOptional(request.ColorDescription);
+            color.ColorDescription = TextHelper.TrimOrNull(request.ColorDescription);
             color.IsSaleEnabled = request.IsSaleEnabled;
             color.IsActive = true;
         }
@@ -163,7 +163,7 @@ public sealed class ProductService : IProductService
     {
         ValidationHelper.ThrowIfNull(colors, "La lista de colores es obligatoria.");
         string[] normalizedCodes = colors!
-            .Select(color => NormalizeRequired(color.Code, "El código de color es obligatorio."))
+            .Select(color => TextHelper.Required(color.Code, "El código de color es obligatorio."))
             .ToArray();
         if (normalizedCodes.Contains(CatalogColorCodes.Assorted, StringComparer.OrdinalIgnoreCase))
             throw new AppException(
@@ -175,18 +175,11 @@ public sealed class ProductService : IProductService
         if (hasDuplicates) throw new AppException("Un producto no puede repetir el mismo código de color.");
     }
 
-    private static string NormalizeRequired(string? value, string message)
-    {
-        ValidationHelper.ThrowIfNullOrWhiteSpace(value, message);
-        return value!.Trim();
-    }
 
-    private static string? NormalizeOptional(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static string NormalizeProductType(string? value)
     {
-        string normalized = NormalizeRequired(value, "El tipo de producto es obligatorio.").ToUpperInvariant();
+        string normalized = TextHelper.Required(value, "El tipo de producto es obligatorio.").ToUpperInvariant();
         if (!ProductTypes.All.Contains(normalized))
             throw new AppException("El tipo de producto no es válido.");
         return normalized;

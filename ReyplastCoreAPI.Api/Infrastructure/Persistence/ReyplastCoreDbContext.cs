@@ -1,8 +1,9 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ReyplastCoreAPI.Domain.Catalog;
 using ReyplastCoreAPI.Domain.Catalog.Entities;
 using ReyplastCoreAPI.Domain.Common;
 using ReyplastCoreAPI.Domain.Orders.Entities;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Infrastructure.Persistence;
 
@@ -14,7 +15,6 @@ public class ReyplastCoreDbContext : DbContext
     public DbSet<Color> Colors => Set<Color>();
     public DbSet<SalesOrder> Orders => Set<SalesOrder>();
     public DbSet<SalesOrderDetail> OrderDetails => Set<SalesOrderDetail>();
-    public DbSet<SalesOrderDetailQuantityHistory> OrderDetailQuantityHistory => Set<SalesOrderDetailQuantityHistory>();
     public DbSet<OrderSituation> OrderSituations => Set<OrderSituation>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<ChannelGroup> ChannelGroups => Set<ChannelGroup>();
@@ -69,7 +69,7 @@ public class ReyplastCoreDbContext : DbContext
 
         modelBuilder.Entity<OrderSituation>(entity =>
         {
-            entity.ToTable("OrderSituations", "orders");
+            entity.ToTable("OrderSituations", "dbo");
             entity.HasKey(situation => new { situation.SourceSystem, situation.Code });
             entity.Property(situation => situation.SourceSystem).HasMaxLength(20).ValueGeneratedNever();
             entity.Property(situation => situation.Code).HasMaxLength(20).ValueGeneratedNever();
@@ -128,7 +128,7 @@ public class ReyplastCoreDbContext : DbContext
 
         modelBuilder.Entity<SalesOrder>(entity =>
         {
-            entity.ToTable("Orders", "orders");
+            entity.ToTable("Orders", "dbo");
             entity.HasKey(order => order.Id);
             entity.Property(order => order.Id).ValueGeneratedNever();
             entity.Property(order => order.SourceDocumentId).HasMaxLength(100);
@@ -143,6 +143,7 @@ public class ReyplastCoreDbContext : DbContext
             entity.Property(order => order.PaymentConditionCode).HasMaxLength(10);
             entity.Property(order => order.PaymentConditionName).HasMaxLength(100);
             entity.Property(order => order.SourceSystem).HasMaxLength(20).IsRequired();
+            entity.Property(order => order.SourceTotalUnits).HasPrecision(18, 4);
             entity.Ignore(order => order.TotalItems);
             entity.Ignore(order => order.TotalUnits);
             entity.Property(order => order.CreatedBy).HasMaxLength(100);
@@ -168,7 +169,7 @@ public class ReyplastCoreDbContext : DbContext
 
         modelBuilder.Entity<SalesOrderDetail>(entity =>
         {
-            entity.ToTable("OrderDetails", "orders");
+            entity.ToTable("OrderDetails", "dbo");
             entity.HasKey(detail => detail.Id);
             entity.Property(detail => detail.Id).ValueGeneratedNever();
             entity.Property(detail => detail.SourceDetailId).HasMaxLength(100).IsRequired();
@@ -188,24 +189,11 @@ public class ReyplastCoreDbContext : DbContext
                 .IsUnique().HasDatabaseName("UX_OrderDetails_Order_SourceDetailId");
             entity.HasIndex(detail => detail.SyncExecutionId).HasDatabaseName("IX_OrderDetails_SyncExecutionId");
         });
-
-        modelBuilder.Entity<SalesOrderDetailQuantityHistory>(entity =>
-        {
-            entity.ToTable("OrderDetailQuantityHistory", "orders");
-            entity.HasKey(history => history.Id);
-            entity.Property(history => history.RequestedQuantity).HasPrecision(18, 4);
-            entity.Property(history => history.SuspendedQuantity).HasPrecision(18, 4);
-            entity.Property(history => history.AvailableQuantity).HasPrecision(18, 4);
-            entity.HasIndex(history => new { history.OrderDetailId, history.ObservedAt });
-            entity.HasIndex(history => history.SyncExecutionId);
-            entity.HasOne(history => history.OrderDetail).WithMany(detail => detail.QuantityHistory)
-                .HasForeignKey(history => history.OrderDetailId).OnDelete(DeleteBehavior.Restrict);
-        });
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
-        DateTime now = DateTime.UtcNow.AddHours(-5);
+        DateTime now = DateHelper.PeruNow();
         foreach (var entry in ChangeTracker.Entries<AuditableEntity>())
         {
             if (entry.State == EntityState.Added) entry.Entity.CreatedAt = now;

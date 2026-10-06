@@ -1,10 +1,11 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Globalization;
 using Hangfire;
 using Hangfire.Storage;
 using Microsoft.Extensions.Options;
 using ReyplastCoreAPI.Application.DTOs.Order;
 using ReyplastCoreAPI.Application.Interfaces.Services;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Application.Services.Orders;
 
@@ -78,7 +79,7 @@ public sealed class OsisApprovedOrdersHourlyJob
     [DisplayName("OSIS · pedidos aprobados del día · {0}")]
     public async Task<string> ExecuteAsync(string schedule, IJobCancellationToken cancellationToken)
     {
-        DateTime startedAt = PeruNow();
+        DateTime startedAt = DateHelper.PeruNow();
         // El cron ya no la programa de 23:00 a 05:59; esto cubre "Trigger now" desde el dashboard o un
         // reintento que caiga fuera de la ventana.
         if (!_options.IsInsideWindow(startedAt))
@@ -88,9 +89,10 @@ public sealed class OsisApprovedOrdersHourlyJob
             return outside;
         }
 
-        // Una sincronización manual por rango ya está recorriendo OSIS: esta hora no suma nada y solo
-        // cargaría el servidor. La próxima ejecución horaria vuelve a revisar el día completo.
-        if (IsOrderRangeSyncRunning())
+        // Ya hay otra sincronización recorriendo OSIS (un rango manual u otra ejecución horaria: reintento o
+        // "Trigger now"): esta no suma nada, solo esperaría su turno y cargaría el servidor. La próxima
+        // ejecución horaria vuelve a revisar el día completo.
+        if (IsAnotherOrderSyncRunning())
         {
             const string skipped = "Omitida: ya había una sincronización de pedidos en curso.";
             _logger.LogInformation("Sincronización horaria de pedidos aprobados omitida: hay otra en curso.");
@@ -133,16 +135,20 @@ public sealed class OsisApprovedOrdersHourlyJob
         return string.Format(Peru,
             "{0:dd/MM/yyyy} (hora Perú) · {1} pedidos aprobados {2} · {3} nuevos · {4} con cambios · {5} sin cambios · {6:HH:mm:ss}–{7:HH:mm:ss}{8}",
             date, result.RecordsRead, label, result.RecordsCreated, result.RecordsChanged, result.RecordsUnchanged,
-            startedAt, PeruNow(), result.HasChanges ? " · MasterLogic notificado" : string.Empty);
+            startedAt, DateHelper.PeruNow(), result.HasChanges ? " · MasterLogic notificado" : string.Empty);
     }
 
-    private bool IsOrderRangeSyncRunning()
+    private bool IsAnotherOrderSyncRunning()
     {
         try
         {
             IMonitoringApi monitoring = _storage.GetMonitoringApi();
-            return monitoring.ProcessingJobs(0, 100)
-                .Any(job => job.Value?.Job?.Type == typeof(OrderSyncBackgroundJob));
+            List<Type?> processing = monitoring.ProcessingJobs(0, 100)
+                .Select(job => job.Value?.Job?.Type)
+                .ToList();
+            // Esta misma ejecución ya figura como "Processing": otra horaria significa más de una.
+            return processing.Any(type => type == typeof(OrderSyncBackgroundJob))
+                || processing.Count(type => type == typeof(OsisApprovedOrdersHourlyJob)) > 1;
         }
         catch (Exception exception)
         {
@@ -154,5 +160,4 @@ public sealed class OsisApprovedOrdersHourlyJob
     }
 
     // Misma convención que el resto del servicio de pedidos: OSIS guarda hora de Perú (UTC-5).
-    private static DateTime PeruNow() => DateTime.UtcNow.AddHours(-5);
 }

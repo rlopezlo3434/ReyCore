@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.Extensions.Options;
@@ -6,6 +6,7 @@ using ReyplastCoreAPI.Application.DTOs.Integrations.Sap;
 using ReyplastCoreAPI.Application.Interfaces.Integrations;
 using ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders.Dtos;
 using ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders.Mappers;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders;
 
@@ -29,8 +30,8 @@ public sealed class SapOrderReader : ISapOrderReader
         {
             DateTime windowEnd = cursor.AddDays(_rangeWindowDays - 1);
             if (windowEnd > dateTo.Date) windowEnd = dateTo.Date;
-            string from = cursor.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            string to = windowEnd.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            string from = DateHelper.IsoDate(cursor);
+            string to = DateHelper.IsoDate(windowEnd);
             string requestUri =
                 $"api/pedidos/completo?desde={Uri.EscapeDataString(from)}&hasta={Uri.EscapeDataString(to)}";
             List<SapOrderApiDto>? response = await _httpClient.GetFromJsonAsync<List<SapOrderApiDto>>(

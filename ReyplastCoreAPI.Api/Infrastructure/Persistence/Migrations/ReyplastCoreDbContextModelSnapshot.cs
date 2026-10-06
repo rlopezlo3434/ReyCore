@@ -264,7 +264,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
 
                     b.HasKey("SourceSystem", "Code");
 
-                    b.ToTable("OrderSituations", "orders");
+                    b.ToTable("OrderSituations", "dbo");
 
                     b.HasData(
                         new
@@ -410,10 +410,17 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<int?>("SourceLineCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("SourceSystem")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<decimal?>("SourceTotalUnits")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
 
                     b.Property<Guid?>("SyncExecutionId")
                         .HasColumnType("uniqueidentifier");
@@ -444,7 +451,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Orders_Source_Branch_DocNum")
                         .HasFilter("[BranchCode] IS NOT NULL");
 
-                    b.ToTable("Orders", "orders");
+                    b.ToTable("Orders", "dbo");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", b =>
@@ -523,45 +530,7 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_OrderDetails_Order_SourceDetailId");
 
-                    b.ToTable("OrderDetails", "orders");
-                });
-
-            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetailQuantityHistory", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<decimal>("AvailableQuantity")
-                        .HasPrecision(18, 4)
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<DateTime>("ObservedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("OrderDetailId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<decimal>("RequestedQuantity")
-                        .HasPrecision(18, 4)
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<decimal>("SuspendedQuantity")
-                        .HasPrecision(18, 4)
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<Guid?>("SyncExecutionId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SyncExecutionId");
-
-                    b.HasIndex("OrderDetailId", "ObservedAt");
-
-                    b.ToTable("OrderDetailQuantityHistory", "orders");
+                    b.ToTable("OrderDetails", "dbo");
                 });
 
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.Channel", b =>
@@ -607,17 +576,6 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
                     b.Navigation("Order");
                 });
 
-            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetailQuantityHistory", b =>
-                {
-                    b.HasOne("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", "OrderDetail")
-                        .WithMany("QuantityHistory")
-                        .HasForeignKey("OrderDetailId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("OrderDetail");
-                });
-
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Catalog.Entities.ChannelGroup", b =>
                 {
                     b.Navigation("Channels");
@@ -636,11 +594,6 @@ namespace ReyplastCoreAPI.Api.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrder", b =>
                 {
                     b.Navigation("Details");
-                });
-
-            modelBuilder.Entity("ReyplastCoreAPI.Domain.Orders.Entities.SalesOrderDetail", b =>
-                {
-                    b.Navigation("QuantityHistory");
                 });
 #pragma warning restore 612, 618
         }

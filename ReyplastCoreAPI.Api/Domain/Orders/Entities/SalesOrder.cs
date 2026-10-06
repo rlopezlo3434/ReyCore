@@ -1,4 +1,4 @@
-using ReyplastCoreAPI.Domain.Common;
+﻿using ReyplastCoreAPI.Domain.Common;
 
 namespace ReyplastCoreAPI.Domain.Orders.Entities;
 
@@ -29,6 +29,11 @@ public sealed class SalesOrder : AuditableEntity
     public string SourceSystem { get; set; } = string.Empty;
     public Guid? SyncExecutionId { get; set; }
     public DateTime? LastSynchronizedAt { get; set; }
+    /// <summary>Resumen de líneas informado por el origen en la sincronización masiva (solo cabeceras):
+    /// líneas activas y unidades disponibles (cantidad - suspendida). Permite mostrar el pedido en el
+    /// listado sin haber traído su detalle; cuando el detalle ya está en Core, manda el detalle.</summary>
+    public int? SourceLineCount { get; set; }
+    public decimal? SourceTotalUnits { get; set; }
     /// <summary>Cantidad calculada de líneas; no se persiste en la cabecera.</summary>
     public int TotalItems { get; set; }
     /// <summary>Suma de unidades activas; se calcula en el listado, no se persiste.</summary>
@@ -65,19 +70,5 @@ public sealed class SalesOrderDetail : AuditableEntity
     public Guid? SyncExecutionId { get; set; }
     public DateTime? LastSynchronizedAt { get; set; }
     public SalesOrder Order { get; set; } = null!;
-    public ICollection<SalesOrderDetailQuantityHistory> QuantityHistory { get; set; } = new List<SalesOrderDetailQuantityHistory>();
 }
 
-/// <summary>Foto inmutable de cantidades informadas por OSIS. Permite conocer con cuánto inició
-/// una línea y cuándo aumentó o disminuyó PPD_CANSUS sin reescribir el trabajo ya registrado.</summary>
-public sealed class SalesOrderDetailQuantityHistory
-{
-    public long Id { get; set; }
-    public Guid OrderDetailId { get; set; }
-    public decimal RequestedQuantity { get; set; }
-    public decimal SuspendedQuantity { get; set; }
-    public decimal AvailableQuantity { get; set; }
-    public DateTime ObservedAt { get; set; }
-    public Guid? SyncExecutionId { get; set; }
-    public SalesOrderDetail OrderDetail { get; set; } = null!;
-}

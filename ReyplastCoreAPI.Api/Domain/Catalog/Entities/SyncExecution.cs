@@ -2,7 +2,8 @@ using ReyplastCoreAPI.Domain.Catalog;
 
 namespace ReyplastCoreAPI.Domain.Catalog.Entities;
 
-/// <summary>Audita una ejecución de sincronización desde un sistema externo.</summary>
+/// <summary>Contadores de una sincronización mientras corre (no se persiste: Hangfire es el historial de
+/// ejecuciones, reintentos y errores). Su Id se graba como SyncExecutionId en las filas que toca.</summary>
 public sealed class SyncExecution
 {
     /// <summary>Identificador único compartido con los registros observados.</summary>

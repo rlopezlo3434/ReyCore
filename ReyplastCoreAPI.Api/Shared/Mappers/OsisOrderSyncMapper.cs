@@ -1,6 +1,7 @@
-using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
+﻿using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
 using ReyplastCoreAPI.Domain.Catalog;
 using ReyplastCoreAPI.Domain.Orders.Entities;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Shared.Mappers;
 
@@ -11,10 +12,10 @@ namespace ReyplastCoreAPI.Shared.Mappers;
 public static class OsisOrderSyncMapper
 {
     public static string BuildSourceKey(SalesOrder order) =>
-        $"{order.BranchCode}|{order.DocNum}";
+        OrderSourceKey.Build(order.BranchCode, order.DocNum);
 
     public static string BuildSourceKey(OsisOrderRecord order) =>
-        $"{order.BranchCode}|{order.DocNum}";
+        OrderSourceKey.Build(order.BranchCode, order.DocNum);
 
     public static bool HasHeaderChanged(SalesOrder current, OsisOrderRecord source) =>
         current.DocDate != source.DocDate
@@ -28,11 +29,13 @@ public static class OsisOrderSyncMapper
         || current.PaymentConditionCode != source.PaymentConditionCode
         || current.PaymentConditionName != source.PaymentConditionName
         || current.IsActive != source.IsActive
-        || current.SourceSystem != SourceSystems.Osis;
+        || current.SourceSystem != SourceSystems.Osis
+        || (source.LineCount.HasValue && current.SourceLineCount != source.LineCount)
+        || (source.TotalUnits.HasValue && current.SourceTotalUnits != source.TotalUnits);
 
     public static bool HasDetailChanged(SalesOrderDetail current, OsisOrderDetailRecord source) =>
         current.LineNumber != source.LineNumber
-        || current.Description != Normalize(source.Description)
+        || current.Description != TextHelper.TrimOrNull(source.Description)
         || current.Quantity != source.Quantity
         || current.SuspendedQuantity != source.SuspendedQuantity
         || current.Price != source.Price
@@ -57,6 +60,9 @@ public static class OsisOrderSyncMapper
         target.PaymentConditionName = source.PaymentConditionName;
         target.IsActive = source.IsActive;
         target.SourceSystem = SourceSystems.Osis;
+        // Solo se pisa si la lectura lo calculó (nunca se borra un resumen ya guardado).
+        if (source.LineCount.HasValue) target.SourceLineCount = source.LineCount;
+        if (source.TotalUnits.HasValue) target.SourceTotalUnits = source.TotalUnits;
         target.SyncExecutionId = executionId;
         target.LastSynchronizedAt = synchronizedAt;
         if (changed && !isNew) target.ModifiedAt = synchronizedAt;
@@ -69,7 +75,7 @@ public static class OsisOrderSyncMapper
         target.SourceDetailId = source.ItemCode;
         target.LineNumber = source.LineNumber;
         target.ItemCode = source.ItemCode;
-        target.Description = Normalize(source.Description);
+        target.Description = TextHelper.TrimOrNull(source.Description);
         target.Quantity = source.Quantity;
         target.SuspendedQuantity = source.SuspendedQuantity;
         target.Price = source.Price;
@@ -79,7 +85,4 @@ public static class OsisOrderSyncMapper
         target.LastSynchronizedAt = synchronizedAt;
         if (changed && !isNew) target.ModifiedAt = synchronizedAt;
     }
-
-    private static string? Normalize(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

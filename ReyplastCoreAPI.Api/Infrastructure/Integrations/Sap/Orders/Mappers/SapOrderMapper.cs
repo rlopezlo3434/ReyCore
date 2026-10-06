@@ -1,6 +1,7 @@
-using System.Globalization;
+﻿using System.Globalization;
 using ReyplastCoreAPI.Application.DTOs.Integrations.Sap;
 using ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders.Dtos;
+using ReyplastCoreAPI.Shared.Helpers;
 
 namespace ReyplastCoreAPI.Infrastructure.Integrations.Sap.Orders.Mappers;
 
@@ -32,8 +33,8 @@ public static class SapOrderMapper
             CardName = Required(source.CardName, "CardName"),
             SituationCode = status,
             DocTotal = source.DocTotal,
-            ChannelCode = Optional(source.ChannelCode),
-            ChannelName = Optional(source.ChannelName),
+            ChannelCode = TextHelper.TrimOrNull(source.ChannelCode),
+            ChannelName = TextHelper.TrimOrNull(source.ChannelName),
             Details = details
         };
     }
@@ -41,7 +42,7 @@ public static class SapOrderMapper
     private static SapOrderDetailRecord ToRecord(SapOrderDetailApiDto source) => new()
     {
         ItemCode = Required(source.ItemCode, "Detalle.ItemCode"),
-        Description = Optional(source.Description),
+        Description = TextHelper.TrimOrNull(source.Description),
         Quantity = source.Quantity,
         Price = source.Price,
         LineTotal = source.LineTotal
@@ -51,6 +52,4 @@ public static class SapOrderMapper
         string.IsNullOrWhiteSpace(value)
             ? throw new InvalidDataException($"SAP no devolvió el campo obligatorio {field}.")
             : value.Trim();
-
-    private static string? Optional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

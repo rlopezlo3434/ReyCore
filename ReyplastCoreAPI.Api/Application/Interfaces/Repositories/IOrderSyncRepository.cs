@@ -1,4 +1,4 @@
-using ReyplastCoreAPI.Domain.Catalog.Entities;
+﻿using ReyplastCoreAPI.Domain.Catalog.Entities;
 using ReyplastCoreAPI.Domain.Orders.Entities;
 
 namespace ReyplastCoreAPI.Application.Interfaces.Repositories;
@@ -25,7 +25,6 @@ public interface IOrderSyncRepository
         IReadOnlyCollection<SalesOrderDetail> detailsToInsert,
         IReadOnlyCollection<SalesOrderDetail> detailsToUpdate,
         IReadOnlyCollection<SalesOrderDetail> detailsToTouch,
-        IReadOnlyCollection<SalesOrderDetailQuantityHistory> quantityHistory,
         SyncExecution execution, OrderPersistMode mode, CancellationToken cancellationToken);
     Task PersistSapBatchAsync(IReadOnlyCollection<SalesOrder> ordersToInsert,
         IReadOnlyCollection<SalesOrder> ordersToUpdate,

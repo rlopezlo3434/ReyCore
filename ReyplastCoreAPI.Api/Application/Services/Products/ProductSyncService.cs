@@ -1,4 +1,4 @@
-using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
+﻿using ReyplastCoreAPI.Application.DTOs.Integrations.Osis;
 using ReyplastCoreAPI.Application.DTOs.Product.Response;
 using ReyplastCoreAPI.Application.Interfaces.Integrations;
 using ReyplastCoreAPI.Application.Interfaces.Repositories;
@@ -16,7 +16,6 @@ public sealed class ProductSyncService : IProductSyncService
 {
     private readonly IProductRepository _productRepository;
     private readonly IProductSyncRepository _syncRepository;
-    private readonly ISyncExecutionRepository _executions;
     private readonly IOsisCatalogReader _catalogReader;
     private readonly IProductSyncQueue _syncQueue;
     private readonly ProductSynchronizationLock _synchronizationLock;
@@ -24,42 +23,25 @@ public sealed class ProductSyncService : IProductSyncService
     public ProductSyncService(
         IProductRepository productRepository,
         IProductSyncRepository syncRepository,
-        ISyncExecutionRepository executions,
         IOsisCatalogReader catalogReader,
         IProductSyncQueue syncQueue,
         ProductSynchronizationLock synchronizationLock)
     {
         _productRepository = productRepository;
         _syncRepository = syncRepository;
-        _executions = executions;
         _catalogReader = catalogReader;
         _syncQueue = syncQueue;
         _synchronizationLock = synchronizationLock;
     }
 
-    /// <summary>Registra y encola una sincronización OSIS sin ligarla a la conexión HTTP.</summary>
+    /// <summary>Encola una sincronización OSIS sin ligarla a la conexión HTTP.</summary>
     public async Task<ProductSyncAcceptedResponse> QueueOsisAsync(
         CancellationToken cancellationToken = default)
     {
-        SyncExecution execution = new()
-        {
-            Id = Guid.NewGuid(),
-            SourceSystem = SourceSystems.Osis,
-            ResourceType = SyncResourceTypes.Products,
-            StartedAt = CurrentTime(),
-            Status = SyncStatuses.Queued
-        };
-
-        await _executions.CreateAsync(execution, cancellationToken);
-        string? jobId = await _syncQueue.EnqueueOsisAsync(execution.Id, cancellationToken);
-        if (jobId is null)
-        {
-            await _executions.MarkFailedAsync(
-                execution.Id, "No fue posible agregar la ejecución a la cola.", CancellationToken.None);
-            throw new AppException("No fue posible agregar la sincronización a la cola.", 503);
-        }
-
-        return new ProductSyncAcceptedResponse { ExecutionId = execution.Id, Status = execution.Status, JobId = jobId };
+        Guid executionId = Guid.NewGuid();
+        string jobId = await _syncQueue.EnqueueOsisAsync(executionId, cancellationToken)
+            ?? throw new AppException("No fue posible agregar la sincronización a la cola.", 503);
+        return new ProductSyncAcceptedResponse { ExecutionId = executionId, Status = SyncStatuses.Queued, JobId = jobId };
     }
 
     /// <summary>Ejecuta desde el worker la lectura y persistencia de XIMESA/OSIS.</summary>
@@ -79,8 +61,15 @@ public sealed class ProductSyncService : IProductSyncService
         {
             await _synchronizationLock.WaitAsync(cancellationToken);
             lockAcquired = true;
-            execution = await _executions.MarkRunningAsync(
-                executionId, CurrentTime(), cancellationToken);
+            // Contadores de la ejecución en curso (no se persisten: Hangfire es el historial).
+            execution = new SyncExecution
+            {
+                Id = executionId,
+                SourceSystem = SourceSystems.Osis,
+                ResourceType = SyncResourceTypes.Products,
+                StartedAt = DateHelper.PeruNow(),
+                Status = SyncStatuses.Running
+            };
             response.Status = SyncStatuses.Running;
             await _syncRepository.DeleteExcludedColorsAsync(
                 new[] { CatalogColorCodes.Assorted }, cancellationToken);
@@ -108,27 +97,12 @@ public sealed class ProductSyncService : IProductSyncService
             }
 
             await _syncRepository.DeactivateMissingAsync(
-                execution.Id, CurrentTime(), execution, cancellationToken);
+                execution.Id, DateHelper.PeruNow(), execution, cancellationToken);
             response.Status = SyncStatuses.Completed;
         }
         catch (OperationCanceledException)
         {
-            await _executions.MarkCancelledAsync(
-                executionId, "La sincronización fue cancelada.", CancellationToken.None);
-        }
-        catch (Exception exception)
-        {
-            try
-            {
-                await _executions.MarkFailedAsync(
-                    executionId, exception.Message, CancellationToken.None);
-            }
-            catch
-            {
-                // Se conserva la excepción original de la sincronización.
-            }
-
-            throw;
+            // Cancelada (apagado del API): Hangfire la deja registrada.
         }
         finally
         {
@@ -150,7 +124,7 @@ public sealed class ProductSyncService : IProductSyncService
         List<Product> productsToUpdate = new();
         List<Color> colorsToInsert = new();
         List<Color> colorsToUpdate = new();
-        DateTime synchronizedAt = CurrentTime();
+        DateTime synchronizedAt = DateHelper.PeruNow();
 
         foreach (OsisProductRecord source in page.Products)
         {
@@ -196,7 +170,7 @@ public sealed class ProductSyncService : IProductSyncService
     {
         product.Type = source.ProductType;
         product.GenericCode = source.ProductCode;
-        product.Description = NormalizeOptional(source.ProductDescription);
+        product.Description = TextHelper.TrimOrNull(source.ProductDescription);
         product.SourceSystem = SourceSystems.Osis;
         product.IsActive = source.IsActive;
         if (source.CreatedAt.HasValue) product.CreatedAt = source.CreatedAt.Value;
@@ -254,7 +228,7 @@ public sealed class ProductSyncService : IProductSyncService
         bool isNew,
         bool colorChanged)
     {
-        color.ColorDescription = NormalizeOptional(source.ColorDescription);
+        color.ColorDescription = TextHelper.TrimOrNull(source.ColorDescription);
         color.IsSaleEnabled = source.IsSaleEnabled;
         color.IsActive = source.IsActive;
         color.SyncExecutionId = executionId;
@@ -267,12 +241,12 @@ public sealed class ProductSyncService : IProductSyncService
     private static bool HasProductChanged(Product product, OsisProductRecord source) =>
         !string.Equals(product.SourceSystem, SourceSystems.Osis, StringComparison.Ordinal)
         || !string.Equals(product.Type, source.ProductType, StringComparison.Ordinal)
-        || !string.Equals(product.Description, NormalizeOptional(source.ProductDescription), StringComparison.Ordinal)
+        || !string.Equals(product.Description, TextHelper.TrimOrNull(source.ProductDescription), StringComparison.Ordinal)
         || product.IsActive != source.IsActive
         || (source.CreatedAt.HasValue && product.CreatedAt != source.CreatedAt.Value);
 
     private static bool HasColorChanged(Color color, OsisColorRecord source) =>
-        !string.Equals(color.ColorDescription, NormalizeOptional(source.ColorDescription), StringComparison.Ordinal)
+        !string.Equals(color.ColorDescription, TextHelper.TrimOrNull(source.ColorDescription), StringComparison.Ordinal)
         || color.IsSaleEnabled != source.IsSaleEnabled
         || color.IsActive != source.IsActive;
 
@@ -285,9 +259,4 @@ public sealed class ProductSyncService : IProductSyncService
         execution.ChildRecordsChanged = response.ColorsChanged;
         execution.ChildRecordsUnchanged = response.ColorsUnchanged;
     }
-
-    private static string? NormalizeOptional(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private static DateTime CurrentTime() => DateTime.UtcNow.AddHours(-5);
 }
